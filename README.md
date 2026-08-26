@@ -14,7 +14,9 @@ dev-research/
 ├── mkdocs.yml                    site configuration, including the nav
 ├── requirements.txt              Python packages that build the site
 ├── .gitignore                    ignore rules for Node, Python, .NET, secrets, and the site output
-├── .github/workflows/docs.yml    builds on pull requests and pushes to main; deploys on pushes to main and manual runs
+├── .github/workflows/docs.yml    runs the unit tests and a strict build on pull requests, pushes to main, and manual runs; deploys on pushes to main and manual runs
+├── hooks/github_parity.py        build hook: fails the strict build on GitHub-only markdown that would render wrong
+├── tests/                        unit tests for the hook
 ├── docs/                         site source — one folder per topic
 │   ├── index.md                  site landing page
 │   ├── <topic>/
@@ -48,7 +50,7 @@ dev-research/
 
 2. Add it to the topic's section in `nav:` in `mkdocs.yml`. The strict build fails if you forget.
 3. List it in the topic's `index.md` with its description sentence.
-4. Write it: one question per guide, a **References** section last. Link to other guides with relative paths (`../other-topic/guide.md#anchor`); link to prototypes with full GitHub URLs; never link into `docs/superpowers/` (excluded pages are not caught by the strict build).
+4. Write it: one question per guide, a **References** section last. Link to other guides with relative paths (`../other-topic/guide.md#anchor`); link to prototypes with full GitHub URLs; never link into `docs/superpowers/` (excluded pages are not caught by the strict build). Guides are GitHub-flavoured markdown, and the build fails if a URL is not rendered as a link, a nested list is not indented by a multiple of 4, a table follows a text line without a blank line, or a GitHub alert (`> [!NOTE]`) is used — write `!!! note` instead.
 5. Run `mkdocs build --strict` — it must pass.
 
 ## Adding a prototype
@@ -62,14 +64,15 @@ python -m venv .venv
 .venv\Scripts\activate           # PowerShell / cmd — in Git Bash: source .venv/Scripts/activate
 pip install -r requirements.txt
 mkdocs serve                     # http://127.0.0.1:8000, live reload
-mkdocs build --strict            # what CI runs; broken links, broken anchors, and pages missing from the nav fail it
+mkdocs build --strict            # what CI runs; broken links, broken anchors, pages missing from the nav, and GitHub-only markdown fail it
+python -m unittest discover -s tests   # unit tests for the build hook in hooks/
 ```
 
 Local builds show no "Last update" dates: the git-date plugin only runs in CI, where every file is committed. It is switched on by the `CI` environment variable being exactly `true`, which GitHub Actions sets.
 
 ## Deployment
 
-Pushing to `main` runs the `docs` workflow: a strict build, then a deploy to GitHub Pages. Pull requests build only. Manual runs (Actions → docs → Run workflow) build and deploy.
+Pushing to `main` runs the `docs` workflow: the unit tests, a strict build, then a deploy to GitHub Pages. Pull requests build only. Manual runs (Actions → docs → Run workflow) build and deploy.
 
 ## One-time setup
 

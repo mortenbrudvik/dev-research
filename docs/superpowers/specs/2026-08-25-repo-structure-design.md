@@ -36,7 +36,11 @@ dev-research/
 ├── .gitignore                    junk and secrets for Node, Python, .NET, and the MkDocs output (section 4)
 ├── .github/
 │   └── workflows/
-│       └── docs.yml              build on pull requests and pushes to main; deploy on pushes to main and manual runs (section 5)
+│       └── docs.yml              unit tests + strict build on pull requests, pushes to main, and manual runs; deploy on pushes to main and manual runs (section 5)
+├── hooks/
+│   └── github_parity.py          build hook: fails the strict build on GitHub-only markdown that would render wrong (2026-08-26-github-parity-hook-design.md)
+├── tests/
+│   └── test_github_parity.py     unit tests for the hook, run in CI before the build
 ├── docs/                         site source — one folder per topic
 │   ├── index.md                  site landing page: what this is, list of topics
 │   ├── ai-development/
@@ -147,6 +151,9 @@ nav:
       - ai-development/index.md
       - ai-development/loops-and-graphs.md
 
+hooks:
+  - hooks/github_parity.py   # fails the strict build on GitHub-only markdown that would render wrong
+
 validation:
   omitted_files: warn
   absolute_links: warn
@@ -185,6 +192,10 @@ markdown_extensions:
   - pymdownx.details
   - pymdownx.highlight
   - pymdownx.inlinehilite
+  - pymdownx.magiclink          # bare URLs become links, as on GitHub
+  - pymdownx.tasklist:          # - [ ] task lists, as on GitHub
+      custom_checkbox: true
+  - pymdownx.tilde              # ~~strikethrough~~, as on GitHub
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -205,6 +216,8 @@ Notes on the choices:
 - **The nav is explicit.** MkDocs' auto-generated nav titles a section from its folder name (`ai-development` → "Ai development") and offers no way to fix that from frontmatter, so the four-line `nav:` block is the cheaper option. Adding a guide means adding a file and a nav line; `omitted_files: warn` under `--strict` fails the build if the line is forgotten. Nav entries without a label (`- index.md`) take the page's `title`.
 - **`exclude_docs`** keeps `docs/superpowers/` out of the build so design specs are versioned but not published.
 - **`validation`** raises link and anchor problems as warnings, which `--strict` turns into failures.
+- **`hooks/github_parity.py`** (design: `2026-08-26-github-parity-hook-design.md`) runs inside every build and fails `--strict` when a URL is not a link in the rendered page or the source uses GitHub-only syntax that Python-Markdown degrades silently. Its stdlib unit tests under `tests/` run in CI before the build.
+- **`pymdownx.magiclink`** autolinks bare URLs. Python-Markdown does not do this by itself, unlike GitHub, and the guides' References sections are written GitHub-style; without it every reference rendered as plain text (found after the first publish, 2026-08-26).
 - **`content.action.edit`** is required for Material to render the "edit this page" button that `edit_uri` points at; without it `edit_uri` is inert.
 - **`extra.status`** provides the tooltips for the optional `status` frontmatter (section 3). Material renders its default status icon for these values; custom icons would need an `extra.css` and are out of scope.
 - **`git-revision-date-localized` is enabled only when `CI` is set** (GitHub Actions sets `CI=true`). Locally, uncommitted files have no history and the plugin would stamp them with today's date — a misleading "Last update" — and with the plugin's default parallel processing that warning is not counted by `--strict`, so nothing would flag it. In CI every file is committed. Local builds therefore show no "Last update" line; that is expected.
@@ -263,6 +276,7 @@ jobs:
           python-version: "3.13"
           cache: pip
       - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
       - run: mkdocs build --strict
       - uses: actions/upload-pages-artifact@v5
         with:
@@ -317,6 +331,7 @@ Nothing is committed by the assistant; the owner reviews the working tree and co
 
 ## 7. Verification
 
+- Local: `python -m unittest discover -s tests -v` passes (the GitHub-parity hook's unit tests).
 - Local: create `.venv`, install requirements, run `mkdocs build --strict` with `CI` unset. Pass criterion: exit code 0 and no `WARNING -` log lines. Material prints a boxed, multi-line notice about MkDocs 2.0 on every build; it is informational and does not affect the result. The guide's in-document table-of-contents links are covered by this build (`validation.anchors: warn` under `--strict`).
 - Local: `mkdocs serve`, open the site, and confirm: the sidebar section reads "AI development" and links to the topic landing page; the guide's fenced code blocks (text, python, typescript), its tables (sections 2.2, 4.3, 6), and its table-of-contents links render and navigate. Temporarily set `status: needs-review` on the guide and confirm the nav shows a status icon whose tooltip is the `extra.status` text; revert.
 - After the owner's first push: the `docs` workflow is green and the site is live at `site_url`, showing a "Last update" date on the guide.

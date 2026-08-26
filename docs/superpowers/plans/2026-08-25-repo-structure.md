@@ -179,6 +179,7 @@ markdown_extensions:
   - pymdownx.details
   - pymdownx.highlight
   - pymdownx.inlinehilite
+  - pymdownx.magiclink          # bare URLs become links, as on GitHub
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -799,5 +800,7 @@ All ten tasks were executed by subagents and passed spec-compliance and quality 
 - `prototypes/README.md`: states the `<name>` kebab-case convention and describes the `.env` rules exactly (`.env`, `.env.*`, `.env.example` re-included).
 - Expected-output corrections: `python -m mkdocs --version` prints a `python -m` prefix (Task 1 Step 3); the Task 10 Step 3 `cut -c1-60` string was one character short.
 - Task 6 notes that `sed -i` on Git Bash rewrites CRLF files as LF and how to guard against it.
+- 2026-08-26, after first publish: the guide's 31 bare URLs rendered as plain text because Python-Markdown, unlike GitHub, does not autolink them. Added `pymdownx.magiclink` to `markdown_extensions` (Task 2 block updated) rather than rewriting the guide, so GitHub-style bare URLs work in every future guide.
+- 2026-08-26, follow-up: to stop that class of bug recurring, `hooks/github_parity.py` + `tests/` were added and `mkdocs.yml` gained `hooks:`, `pymdownx.tasklist`, and `pymdownx.tilde`; CI runs the unit tests before the build. Spec and plan: `2026-08-26-github-parity-hook-design.md` / `2026-08-26-github-parity-hook.md`. The Task 2 and Task 9 content blocks above are superseded by the current `mkdocs.yml` and `docs.yml`.
 
 Observations recorded but deliberately not acted on: no `.gitattributes` (`core.autocrlf=true` on this machine will print "LF will be replaced by CRLF" on `git add`; harmless); workflow-level `permissions`/`concurrency` and no `timeout-minutes` match GitHub's starter template; the date plugin's CI code path first runs on the owner's first push.

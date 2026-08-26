@@ -14,12 +14,14 @@ The design rationale is in `docs/superpowers/specs/2026-08-25-repo-structure-des
 python -m venv .venv && .venv\Scripts\activate      # Git Bash: source .venv/Scripts/activate
 pip install -r requirements.txt
 mkdocs serve                                        # http://127.0.0.1:8000, live reload
-mkdocs build --strict                               # THE test suite — must exit 0 with no "WARNING -" lines
+mkdocs build --strict                               # the site build test — must exit 0 with no "WARNING -" lines
 ```
 
 Without activating: `.venv/Scripts/python -m mkdocs build --strict`.
 
-- `--strict` turns broken file links, broken anchors (including same-page `#anchor` links), and pages missing from `nav:` into failures. There is no other test suite.
+Unit tests for the build hook (stdlib `unittest`, no extra dependency; CI runs them before the build): `python -m unittest discover -s tests -v`. Run a single case with `python -m unittest tests.test_github_parity.Lint.test_two_space_nested_list_flagged_with_line_number`.
+
+- `--strict` turns broken file links, broken anchors (including same-page `#anchor` links), pages missing from `nav:`, and the GitHub-parity hook's warnings into failures. The unit tests above are the only other suite.
 - Every build prints a boxed "Warning from the Material for MkDocs team" notice about MkDocs 2.0 on stdout. It is informational, not a `WARNING -` log line; ignore it.
 - Do not validate `mkdocs.yml` with `yaml.safe_load` — it fails on the `!ENV` and `!!python/name:` tags the file needs. The strict build (or `python -c "from mkdocs.config import load_config; load_config()"`) is the check. Plain `yaml.safe_load` is fine for `.github/workflows/docs.yml` (note PyYAML reads the `on:` key as boolean `True`).
 - Local builds show no "Last update" dates. The `git-revision-date-localized` plugin is gated on the `CI` env var being exactly `true` (`enabled: !ENV [CI, false]`); `CI=1` makes MkDocs abort with a type error, and running it locally on uncommitted files would stamp them with today's date.
@@ -32,6 +34,7 @@ Two trees, joined only by a shared topic slug:
 - `docs/<topic>/` — site source. `index.md` is the topic landing page (scope paragraph, `**Status:**` line, Guides list, Prototypes list or "None yet"); each guide is one file answering one question, with References as its last section.
 - `prototypes/<topic>/<name>/` — self-contained runnable projects (own README, own tooling and lockfile, any language). No root-level workspace, `.sln`, or `package.json`; add one only when several same-stack prototypes justify it. `prototypes/<topic>/` is created with the first prototype, not before.
 - `docs/superpowers/` — design specs and plans. Versioned but **excluded from the site** (`exclude_docs`). Never link to it from a guide: MkDocs logs links to excluded files at INFO, so the strict build will not catch the resulting 404.
+- `hooks/github_parity.py` + `tests/` — a MkDocs hook (registered under `hooks:` in `mkdocs.yml`) that runs inside every build and makes `--strict` fail on GitHub-flavoured markdown that Python-Markdown would silently degrade. Three pure functions (`find_urls`, `missing_links`, `lint`) carry the logic; extend the lint there and add a test case when a new divergence is found.
 
 **Nav is explicit.** `mkdocs.yml` lists every page; auto-nav was rejected because it titles the section "Ai development" from the folder name. Adding a guide is therefore three edits, and the strict build fails if the middle one is forgotten:
 
@@ -45,11 +48,11 @@ A new topic additionally needs a `nav:` section whose first entry is its `index.
 
 `status` is Material's built-in page-status key: any value renders an icon next to the nav entry with the tooltip from `extra.status` in `mkdocs.yml`. Only `draft` and `needs-review` are defined; **omit the key when a guide is current** so icons appear only where attention is needed. A guide may also carry a visible `**Status:** current as of <month year>.` line in its body; change it together with the frontmatter.
 
-**Links.** Between docs: relative markdown links (`../other-topic/guide.md#anchor`). To prototypes or anything outside `docs/`: full GitHub URLs (`https://github.com/mortenbrudvik/dev-research/tree/main/prototypes/<topic>/<name>`), because nothing outside `docs/` is copied into the site. MkDocs' slugifier matches GitHub's for plain headings but collapses runs of spaces/hyphens (`A - B` → `a-b`, GitHub gives `a---b`); the strict build catches in-document mismatches.
+**Links and GitHub-style markdown.** Bare URLs are autolinked by `pymdownx.magiclink` (Python-Markdown does not do this on its own, unlike GitHub) — the References sections rely on it, and the hook fails the build if any URL is not a link in the rendered page. The hook also rejects list markers indented by a non-multiple of 4 (2-space nesting silently flattens), tables that follow a text line without a blank line (they become paragraph text; directly after a heading is fine), and `> [!NOTE]` alerts (write `!!! note`). It ignores fenced and inline code, a leading frontmatter block, and a BOM; images count as rendered (`src`), and a rendered target that starts with the URL counts, so URLs containing parentheses pass when written as `<url>` or `[text](url)`. Task lists and `~~strikethrough~~` render via `pymdownx.tasklist`/`pymdownx.tilde`. Between docs: relative markdown links (`../other-topic/guide.md#anchor`). To prototypes or anything outside `docs/`: full GitHub URLs (`https://github.com/mortenbrudvik/dev-research/tree/main/prototypes/<topic>/<name>`), because nothing outside `docs/` is copied into the site. MkDocs' slugifier matches GitHub's for plain headings but collapses runs of spaces/hyphens (`A - B` → `a-b`, GitHub gives `a---b`); the strict build catches in-document mismatches.
 
 ## CI and publishing
 
-`.github/workflows/docs.yml`: pull requests and pushes to `main` run the strict build; pushes to `main` and manual `workflow_dispatch` runs also deploy (artifact-based Pages flow, no `gh-pages` branch). `fetch-depth: 0` is required so the date plugin can read history. Pages is already configured with source = GitHub Actions; the repository must stay public for Pages to work on this account.
+`.github/workflows/docs.yml`: pull requests, pushes to `main`, and manual `workflow_dispatch` runs run the unit tests and the strict build; pushes to `main` and manual runs also deploy (artifact-based Pages flow, no `gh-pages` branch). `fetch-depth: 0` is required so the date plugin can read history. Pages is already configured with source = GitHub Actions; the repository must stay public for Pages to work on this account.
 
 ## Git and hygiene
 

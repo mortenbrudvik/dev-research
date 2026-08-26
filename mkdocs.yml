@@ -14,6 +14,9 @@ nav:
       - ai-development/index.md
       - ai-development/loops-and-graphs.md
 
+hooks:
+  - hooks/github_parity.py   # fails the strict build on GitHub-only markdown that would render wrong
+
 validation:
   omitted_files: warn
   absolute_links: warn
@@ -52,6 +55,11 @@ markdown_extensions:
   - pymdownx.details
   - pymdownx.highlight
   - pymdownx.inlinehilite
+  - pymdownx.magiclink          # bare URLs become links, as on GitHub
+  - pymdownx.tasklist:          # - [ ] task lists, as on GitHub
+      custom_checkbox: true
+  - pymdownx.tilde:             # ~~strikethrough~~, as on GitHub
+      subscript: false          # GitHub has no H~2~O subscript syntax
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
