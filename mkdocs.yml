@@ -1,0 +1,67 @@
+site_name: Dev Research
+site_description: Living guides on development concepts and technology, and the prototypes they lead to.
+site_url: https://mortenbrudvik.github.io/dev-research/
+repo_url: https://github.com/mortenbrudvik/dev-research
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+exclude_docs: |
+  superpowers/
+
+nav:
+  - index.md
+  - AI development:
+      - ai-development/index.md
+      - ai-development/loops-and-graphs.md
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+theme:
+  name: material
+  features:
+    - navigation.indexes       # a topic's index.md is the section's landing page
+    - navigation.sections
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit      # "edit this page" link to GitHub, built from edit_uri
+  palette:
+    - scheme: default
+      toggle: { icon: material/brightness-7, name: Switch to dark mode }
+    - scheme: slate
+      toggle: { icon: material/brightness-4, name: Switch to light mode }
+
+extra:
+  status:
+    draft: Draft — not yet trustworthy
+    needs-review: Needs review — known or suspected to have drifted
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+  - git-revision-date-localized:
+      enabled: !ENV [CI, false]   # dates come from git history; only meaningful in CI, where files are committed
+      type: date

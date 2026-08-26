@@ -1,0 +1,22 @@
+# Node
+node_modules/
+dist/
+.next/
+# Python
+.venv/
+__pycache__/
+*.pyc
+# .NET
+bin/
+obj/
+.vs/
+# Secrets
+.env
+.env.*
+!.env.example
+# MkDocs
+/site/
+# Editors / OS
+.idea/
+.DS_Store
+Thumbs.db
