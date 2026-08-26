@@ -10,4 +10,4 @@ The guides distil research sweeps into something to act on: what a concept is, w
 
 ## Topics
 
-- [AI development](ai-development/index.md) — control flow in agentic AI systems: loops, graphs, frameworks, production, security, memory, and protocols.
+- [AI development](ai-development/index.md) — control flow in agentic AI systems (loops, graphs, frameworks, production, security, memory, protocols) and codebase structure for AI-assisted development (vertical slices as guardrails for coding agents).

@@ -13,6 +13,7 @@ nav:
   - AI development:
       - ai-development/index.md
       - ai-development/loops-and-graphs.md
+      - ai-development/vertical-slice-architecture.md
 
 hooks:
   - hooks/github_parity.py   # fails the strict build on GitHub-only markdown that would render wrong
