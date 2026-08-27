@@ -2716,10 +2716,16 @@ namespace Fixture.Infrastructure
 ```csharp
 using ArchUnitNET.Domain;
 using ArchUnitNET.Loader;
+using ArchUnitNET.xUnit;
 using static ArchUnitNET.Fluent.ArchRuleDefinition;
 
 namespace Orders.ArchitectureTests;
 
+/// <summary>
+/// Proves the rules can fail: each rule is evaluated against a fixture assembly that violates it. The controls assert
+/// the *named* violation, because ArchUnitNET reports a mistyped subject pattern as a violation too, which would let
+/// a rotted pattern pass a plain HasNoViolations check.
+/// </summary>
 public class NegativeControl
 {
     private static readonly Architecture FixtureArchitecture =
@@ -2731,7 +2737,8 @@ public class NegativeControl
         var rule = Types().That().ResideInNamespaceMatching(@"^Fixture\.Domain")
             .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Fixture\.(Application|Infrastructure)"));
 
-        Assert.False(rule.HasNoViolations(FixtureArchitecture));
+        var error = Assert.Throws<FailedArchRuleException>(() => rule.Check(FixtureArchitecture));
+        Assert.Contains("Fixture.Domain.Entity", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2740,7 +2747,8 @@ public class NegativeControl
         var rule = Types().That().ResideInNamespaceMatching(@"^Fixture\.Application")
             .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Fixture\.Infrastructure"));
 
-        Assert.False(rule.HasNoViolations(FixtureArchitecture));
+        var error = Assert.Throws<FailedArchRuleException>(() => rule.Check(FixtureArchitecture));
+        Assert.Contains("Fixture.Application.Formatter", error.Message, StringComparison.Ordinal);
     }
 }
 ```
