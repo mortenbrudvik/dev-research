@@ -3,7 +3,7 @@ id: T1
 title: Ship an order
 kind: slice-local
 scope.sliced: src/Orders.Api/Features/Ship*/**, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Application/Orders/Commands/Ship*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/**, tests/Orders.IntegrationTests/**
+scope.layered: src/Orders.Application/Orders/Commands/Ship*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/OrdersEndpoints.cs, tests/Orders.IntegrationTests/**
 ---
 Add the ability to ship an order.
 
