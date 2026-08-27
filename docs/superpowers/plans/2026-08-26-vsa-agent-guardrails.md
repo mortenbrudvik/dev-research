@@ -3668,7 +3668,7 @@ function Get-NormalizedTests([string]$dir) {
             Where-Object { $_ -notmatch '^\s*(using |namespace )' } |
             ForEach-Object { $_.TrimEnd() }
         $text = ($lines -join "`n").Trim()
-        foreach ($name in $DtoRenames.Keys) { $text = $text -replace "b$nameb", $DtoRenames[$name] }
+        foreach ($name in $DtoRenames.Keys) { $text = $text -replace "\b$name\b", $DtoRenames[$name] }
         $result[$f.Name] = $text
     }
     return $result
