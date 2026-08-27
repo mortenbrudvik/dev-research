@@ -1,6 +1,6 @@
 # vsa-agent-guardrails — experiment report
 
-**Run:** (results folder name) · **Model:** (from the `model` column) · **Repetitions:** (n) · **Claude Code:** (version) · **Date:** (date)
+**Run:** (results folder name) · **Model:** (the `model` column: the model ids the runs actually billed) · **Repetitions:** (n) · **Claude Code:** (version) · **Date:** (date)
 
 ## Setup
 

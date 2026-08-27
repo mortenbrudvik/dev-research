@@ -258,7 +258,9 @@ try {
                     if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
 
                     $row = New-ResultRow @{
-                        copy = $copyName; task = $spec.id; rep = $rep; model = ($Model ? $Model : 'default')
+                        # What ran, not what was asked for: with no -Model the CLI picks, and the transcript's
+                        # modelUsage keys are the only record of it. 'default' only when there is no transcript.
+                        copy = $copyName; task = $spec.id; rep = $rep; model = if ($Model) { $Model } else { $m.models ?? 'default' }
                         started_at = ($startedAt.ToString('s') + 'Z'); wall_ms = $agent.wall_ms
                         cost_usd = $m.cost_usd; num_turns = $m.num_turns; duration_ms = $m.duration_ms; duration_api_ms = $m.duration_api_ms
                         input_tokens = $m.input_tokens; output_tokens = $m.output_tokens

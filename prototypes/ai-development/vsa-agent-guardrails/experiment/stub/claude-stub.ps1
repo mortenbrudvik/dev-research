@@ -43,7 +43,10 @@ $transcript = @(
     '{"type":"result","subtype":"success","total_cost_usd":0.1234,"num_turns":7,"duration_ms":12345,' +
     '"duration_api_ms":9876,"is_error":false,"terminal_reason":"completed","stop_reason":"end_turn",' +
     '"permission_denials":[],"usage":{"input_tokens":1200,"output_tokens":340,' +
-    '"cache_read_input_tokens":50000,"cache_creation_input_tokens":2000}}'
+    '"cache_read_input_tokens":50000,"cache_creation_input_tokens":2000},' +
+    # Two obviously fake ids, the larger one second, so a row from the stub shows the sorted join the real
+    # CLI's modelUsage keys produce.
+    '"modelUsage":{"stub-model-fast":{"inputTokens":3},"stub-model":{"inputTokens":1200}}}'
 )
 foreach ($line in $transcript) { [Console]::Out.WriteLine($line) }
 exit 0

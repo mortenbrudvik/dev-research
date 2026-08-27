@@ -39,6 +39,7 @@ Assert-Equal 'completed' $m.terminal_reason 'terminal_reason'
 Assert-Equal 'end_turn' $m.stop_reason 'stop_reason'
 Assert-Equal $false $m.is_error 'is_error'
 Assert-Equal 1 $m.permission_denials 'permission_denials'
+Assert-Equal 'claude-fable-5+claude-haiku-4-5' $m.models 'models (modelUsage keys, sorted, not in source order)'
 
 # A transcript that stops before the result event: every result field stays $null, saw_result is $false.
 $truncated = New-TempFile 'parse-events-truncated.jsonl' ((Get-Content -LiteralPath "$fixtures/sample-events.jsonl" | Select-Object -First 6) -join "`n")
@@ -49,6 +50,7 @@ Assert-Equal $null $tr.terminal_reason 'truncated: terminal_reason is null'
 Assert-Equal $null $tr.stop_reason 'truncated: stop_reason is null'
 Assert-Equal $null $tr.cost_usd 'truncated: cost_usd is null'
 Assert-Equal $null $tr.is_error 'truncated: is_error is null'
+Assert-Equal $null $tr.models 'truncated: models is null'
 Assert-Equal 0 $tr.permission_denials 'truncated: permission_denials'
 Assert-Equal 0 $tr.skipped_lines 'truncated: skipped_lines'
 Assert-Equal 2 $tr.read_calls 'truncated: tool calls up to the cut are still counted'
@@ -60,6 +62,7 @@ $nd = ConvertFrom-AgentEvents -Path $noDenials
 Assert-Equal 0 $nd.permission_denials 'result without permission_denials -> 0'
 Assert-Equal $true $nd.saw_result 'result without permission_denials -> saw_result'
 Assert-Equal $null $nd.terminal_reason 'result without terminal_reason -> null'
+Assert-Equal $null $nd.models 'result without modelUsage -> models is null'
 Remove-Item -LiteralPath $noDenials
 
 $spec = Get-TaskSpec -Path "$fixtures/sample-task.md"

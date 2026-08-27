@@ -25,7 +25,7 @@ function ConvertFrom-AgentEvents {
         bash_calls = 0; bash_search_calls = 0; files_read_distinct = 0
         cost_usd = $null; num_turns = $null; duration_ms = $null; duration_api_ms = $null
         input_tokens = $null; output_tokens = $null; cache_read_tokens = $null; cache_create_tokens = $null
-        ended = $null; terminal_reason = $null; stop_reason = $null; is_error = $null
+        ended = $null; terminal_reason = $null; stop_reason = $null; is_error = $null; models = $null
         permission_denials = 0; saw_result = $false; skipped_lines = 0
     }
     $files = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -77,6 +77,12 @@ function ConvertFrom-AgentEvents {
                 $m.cache_create_tokens = Get-Prop $usage 'cache_creation_input_tokens'
                 $denials = Get-Prop $e 'permission_denials'
                 $m.permission_denials = if ($null -eq $denials) { 0 } else { @($denials).Count }   # @($null).Count is 1
+                # The models that actually ran are the keys of modelUsage - there is no model field on the result
+                # event - and a run bills more than one when part of the work goes to a small model.
+                $modelUsage = Get-Prop $e 'modelUsage'
+                $modelNames = @()
+                if ($null -ne $modelUsage) { $modelNames = @($modelUsage.PSObject.Properties.Name) }
+                $m.models = if ($modelNames.Count -eq 0) { $null } else { ($modelNames | Sort-Object) -join '+' }
             }
         }
     }
