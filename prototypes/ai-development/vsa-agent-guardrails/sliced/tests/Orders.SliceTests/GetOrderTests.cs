@@ -37,6 +37,7 @@ public class GetOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
         Assert.NotNull(body);
         Assert.Equal("Shipped", body.Status);
         Assert.NotNull(body.ShippedAt);
+        Assert.True(body.ShippedAt > body.CreatedAt, "the shipping time must sort after the creation time (timestamp converter round-trip)");
     }
 
     [Fact]
