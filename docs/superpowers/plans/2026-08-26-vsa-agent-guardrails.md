@@ -3093,8 +3093,8 @@ Front matter is `key: value` lines between `---` fences; `scope.sliced` and `sco
 id: T1
 title: Ship an order
 kind: slice-local
-scope.sliced: src/Orders.Api/Features/Ship*/**, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Application/Orders/Commands/Ship*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/OrdersEndpoints.cs, tests/Orders.IntegrationTests/**
+scope.sliced: src/Orders.Api/Features/Ship*, src/Orders.Api/Features/Ship*/**, tests/Orders.SliceTests/**
+scope.layered: src/Orders.Application/Orders/Commands/Ship*, src/Orders.Application/Orders/Commands/Ship*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/OrdersEndpoints.cs, tests/Orders.IntegrationTests/**
 ---
 Add the ability to ship an order.
 
@@ -3130,8 +3130,8 @@ Update or add tests so that the suite reflects the new rule. Run the tests befor
 id: T3
 title: List a customer's orders
 kind: slice-local
-scope.sliced: src/Orders.Api/Features/*Customer*/**, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Application/Orders/Queries/*Customer*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/**, src/Orders.Api/Program.cs, tests/Orders.IntegrationTests/**
+scope.sliced: src/Orders.Api/Features/*Customer*, src/Orders.Api/Features/*Customer*/**, tests/Orders.SliceTests/**
+scope.layered: src/Orders.Application/Orders/Queries/*Customer*, src/Orders.Application/Orders/Queries/*Customer*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/**, src/Orders.Api/Program.cs, tests/Orders.IntegrationTests/**
 ---
 Add a way to list one customer's orders.
 
@@ -3190,9 +3190,11 @@ git commit -m "vsa-agent-guardrails(experiment): five task prompts"
 
 The library holds every pure function the runner needs: `ConvertFrom-AgentEvents` (stream-json → metrics), `Get-TaskSpec`, `ConvertTo-GlobRegex`, `Test-PathInScope`, `Read-TrxSummary`, `Read-JscpdSummary`. The fixture mirrors the event shapes observed on Claude Code 2.1.246 (spec §5.3).
 
+Every function here is a measuring instrument, so each one fails loudly rather than returning a plausible number: a missing `permission_denials` key is 0 and not 1, a transcript that stops mid-stream sets `saw_result = $false` instead of leaving zeros that read as a clean run, a re-emitted `tool_use` id is counted once, a `.trx` with no `<Counters>` reports `found = $false` with `$null` counts rather than "0 failures", an absent scope list is an empty list and never "everything is in scope", and every `-Path` is resolved against `$PWD` because the runner works inside `Push-Location`.
+
 - [ ] **Step 1: Fixtures**
 
-`experiment/fixtures/sample-events.jsonl` (seven lines, one JSON object each):
+`experiment/fixtures/sample-events.jsonl` (ten lines, one JSON object each except line 9, which is deliberately truncated so `skipped_lines` has something to count):
 
 ```json
 {"type":"system","subtype":"init","cwd":"C:\\run","session_id":"s1","tools":["Read","Bash"],"model":"claude-fable-5","permissionMode":"dontAsk"}
@@ -3201,7 +3203,10 @@ The library holds every pure function the runner needs: `ConvertFrom-AgentEvents
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"ls -la src","description":"List"}}]},"session_id":"s1"}
 {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"A.cs","is_error":false}]},"session_id":"s1"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_3","name":"Read","input":{"file_path":"c:\\run\\src\\a.cs"}},{"type":"tool_use","id":"toolu_4","name":"Grep","input":{"pattern":"class","path":"src"}},{"type":"tool_use","id":"toolu_5","name":"Edit","input":{"file_path":"C:\\run\\src\\A.cs","old_string":"class A {}","new_string":"class A { }"}}]},"session_id":"s1"}
-{"type":"result","subtype":"success","is_error":false,"duration_ms":19662,"duration_api_ms":8241,"num_turns":5,"result":"done","session_id":"s1","total_cost_usd":0.17785,"usage":{"input_tokens":10,"cache_creation_input_tokens":8569,"cache_read_input_tokens":135344,"output_tokens":939},"permission_denials":[{"tool_name":"Bash","tool_input":{"command":"cat x"}}],"modelUsage":{"claude-fable-5":{"inputTokens":10}}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The same assistant message, re-emitted with its thinking block."},{"type":"tool_use","id":"toolu_3","name":"Read","input":{"file_path":"c:\\run\\src\\a.cs"}},{"type":"tool_use","id":"toolu_4","name":"Grep","input":{"pattern":"class","path":"src"}},{"type":"tool_use","id":"toolu_5","name":"Edit","input":{"file_path":"C:\\run\\src\\A.cs","old_string":"class A {}","new_string":"class A { }"}}]},"session_id":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_6","name":"Read","input":{"file_path":"C:/run/src/A.cs"}}]},"session_id":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_7","name":"Rea
+{"type":"result","subtype":"success","is_error":false,"duration_ms":19662,"duration_api_ms":8241,"num_turns":5,"result":"done","session_id":"s1","total_cost_usd":0.17785,"terminal_reason":"completed","stop_reason":"end_turn","usage":{"input_tokens":10,"cache_creation_input_tokens":8569,"cache_read_input_tokens":135344,"output_tokens":939},"permission_denials":[{"tool_name":"Bash","tool_input":{"command":"cat x"}}],"modelUsage":{"claude-fable-5":{"inputTokens":10}}}
 ```
 
 `experiment/fixtures/sample-task.md`:
@@ -3233,16 +3238,24 @@ function Assert-Equal($expected, $actual, $name) {
     if ("$expected" -ne "$actual") { Write-Host "FAIL $name : expected '$expected', got '$actual'"; $script:failures++ }
     else { Write-Host "ok   $name" }
 }
+function New-TempFile([string]$name, [string]$content) {
+    $p = Join-Path ([IO.Path]::GetTempPath()) $name
+    Set-Content -LiteralPath $p -Value $content -Encoding utf8
+    return $p
+}
 
-$m = ConvertFrom-AgentEvents -Path "$PSScriptRoot/fixtures/sample-events.jsonl"
-Assert-Equal 2 $m.read_calls 'read_calls'
-Assert-Equal 1 $m.files_read_distinct 'files_read_distinct (case-insensitive)'
-Assert-Equal 1 $m.grep_calls 'grep_calls'
+$fixtures = "$PSScriptRoot/fixtures"
+$m = ConvertFrom-AgentEvents -Path "$fixtures/sample-events.jsonl"
+Assert-Equal 3 $m.read_calls 'read_calls'
+Assert-Equal 1 $m.files_read_distinct 'files_read_distinct (case- and separator-insensitive)'
+Assert-Equal 1 $m.grep_calls 'grep_calls (re-emitted tool_use id counted once)'
 Assert-Equal 0 $m.glob_calls 'glob_calls'
-Assert-Equal 1 $m.edit_calls 'edit_calls'
+Assert-Equal 1 $m.edit_calls 'edit_calls (re-emitted tool_use id counted once)'
 Assert-Equal 0 $m.write_calls 'write_calls'
 Assert-Equal 1 $m.bash_calls 'bash_calls'
 Assert-Equal 1 $m.bash_search_calls 'bash_search_calls'
+Assert-Equal 1 $m.skipped_lines 'skipped_lines (one truncated event line)'
+Assert-Equal $true $m.saw_result 'saw_result'
 Assert-Equal 0.17785 $m.cost_usd 'cost_usd'
 Assert-Equal 5 $m.num_turns 'num_turns'
 Assert-Equal 19662 $m.duration_ms 'duration_ms'
@@ -3252,43 +3265,114 @@ Assert-Equal 939 $m.output_tokens 'output_tokens'
 Assert-Equal 135344 $m.cache_read_tokens 'cache_read_tokens'
 Assert-Equal 8569 $m.cache_create_tokens 'cache_create_tokens'
 Assert-Equal 'success' $m.ended 'ended'
+Assert-Equal 'completed' $m.terminal_reason 'terminal_reason'
+Assert-Equal 'end_turn' $m.stop_reason 'stop_reason'
 Assert-Equal $false $m.is_error 'is_error'
 Assert-Equal 1 $m.permission_denials 'permission_denials'
 
-$spec = Get-TaskSpec -Path "$PSScriptRoot/fixtures/sample-task.md"
+# A transcript that stops before the result event: every result field stays $null, saw_result is $false.
+$truncated = New-TempFile 'parse-events-truncated.jsonl' ((Get-Content -LiteralPath "$fixtures/sample-events.jsonl" | Select-Object -First 6) -join "`n")
+$tr = ConvertFrom-AgentEvents -Path $truncated
+Assert-Equal $false $tr.saw_result 'truncated: saw_result'
+Assert-Equal $null $tr.ended 'truncated: ended is null'
+Assert-Equal $null $tr.terminal_reason 'truncated: terminal_reason is null'
+Assert-Equal $null $tr.stop_reason 'truncated: stop_reason is null'
+Assert-Equal $null $tr.cost_usd 'truncated: cost_usd is null'
+Assert-Equal $null $tr.is_error 'truncated: is_error is null'
+Assert-Equal 0 $tr.permission_denials 'truncated: permission_denials'
+Assert-Equal 0 $tr.skipped_lines 'truncated: skipped_lines'
+Assert-Equal 2 $tr.read_calls 'truncated: tool calls up to the cut are still counted'
+Remove-Item -LiteralPath $truncated
+
+# A result event without a permission_denials key must be 0, not 1 (@($null).Count is 1).
+$noDenials = New-TempFile 'parse-events-no-denials.jsonl' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total_cost_usd":0.01}'
+$nd = ConvertFrom-AgentEvents -Path $noDenials
+Assert-Equal 0 $nd.permission_denials 'result without permission_denials -> 0'
+Assert-Equal $true $nd.saw_result 'result without permission_denials -> saw_result'
+Assert-Equal $null $nd.terminal_reason 'result without terminal_reason -> null'
+Remove-Item -LiteralPath $noDenials
+
+$spec = Get-TaskSpec -Path "$fixtures/sample-task.md"
 Assert-Equal 'T9' $spec.id 'task id'
 Assert-Equal 'Sample task' $spec.title 'task title'
 Assert-Equal 2 $spec.scope.sliced.Count 'scope.sliced count'
 Assert-Equal 1 $spec.scope.layered.Count 'scope.layered count'
 Assert-Equal "Do the thing.`nThen do the other thing." $spec.prompt 'prompt body'
 
+# Relative paths must resolve against $PWD, not the process working directory.
+Push-Location -LiteralPath $fixtures
+try {
+    Assert-Equal 3 (ConvertFrom-AgentEvents -Path 'sample-events.jsonl').read_calls 'relative path: ConvertFrom-AgentEvents'
+    Assert-Equal 'T9' (Get-TaskSpec -Path './sample-task.md').id 'relative path: Get-TaskSpec'
+}
+finally { Pop-Location }
+
+$noScope = New-TempFile 'parse-events-no-scope.md' "---`nid: T0`ntitle: No layered scope`nkind: slice-local`nscope.sliced: src/**`n---`nBody."
+$ns = Get-TaskSpec -Path $noScope
+Assert-Equal $false ($null -eq $ns.scope.layered) 'missing scope.layered is an empty list, not null'
+Assert-Equal 0 $ns.scope.layered.Count 'missing scope.layered -> count 0'
+Assert-Equal $false (Test-PathInScope -Path 'src/x.cs' -Globs $ns.scope.layered) 'empty glob list -> out of scope'
+Assert-Equal $false (Test-PathInScope -Path 'src/x.cs' -Globs $null) 'null glob list -> out of scope'
+Remove-Item -LiteralPath $noScope
+
 Assert-Equal '^src/Orders\.Api/Features/Ship[^/]*/.*$' (ConvertTo-GlobRegex 'src/Orders.Api/Features/Ship*/**') 'glob regex'
 Assert-Equal $true (Test-PathInScope -Path 'src/Orders.Api/Features/ShipOrder/ShipOrderHandler.cs' -Globs $spec.scope.sliced) 'in scope'
 Assert-Equal $true (Test-PathInScope -Path 'tests\Orders.SliceTests\ShipOrderTests.cs' -Globs $spec.scope.sliced) 'in scope, backslashes'
 Assert-Equal $false (Test-PathInScope -Path 'src/Orders.Api/Domain/Order.cs' -Globs $spec.scope.sliced) 'out of scope'
 
-$trx = Join-Path ([IO.Path]::GetTempPath()) 'parse-events-sample.trx'
-@'
+$trxCounters = @'
 <?xml version="1.0" encoding="utf-8"?>
 <TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
   <ResultSummary outcome="Failed"><Counters total="13" executed="13" passed="12" failed="1" /></ResultSummary>
 </TestRun>
-'@ | Set-Content -Path $trx -Encoding utf8
+'@
+$trxNoCounters = @'
+<?xml version="1.0" encoding="utf-8"?>
+<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <ResultSummary outcome="Failed" />
+</TestRun>
+'@
+$trx = New-TempFile 'parse-events-sample.trx' $trxCounters
 $t = Read-TrxSummary -Path $trx
+Assert-Equal $true $t.found 'trx found'
 Assert-Equal 13 $t.total 'trx total'
 Assert-Equal 12 $t.passed 'trx passed'
 Assert-Equal 1 $t.failed 'trx failed'
-Remove-Item $trx
+Remove-Item -LiteralPath $trx
 
-$jscpd = Join-Path ([IO.Path]::GetTempPath()) 'parse-events-sample-jscpd.json'
-'{"statistics":{"total":{"lines":100,"sources":5,"clones":2,"duplicatedLines":12,"percentage":12.0}}}' | Set-Content -Path $jscpd -Encoding utf8
+$trxEmpty = New-TempFile 'parse-events-no-counters.trx' $trxNoCounters
+$te = Read-TrxSummary -Path $trxEmpty
+Assert-Equal $false $te.found 'trx without Counters -> found false'
+Assert-Equal $null $te.failed 'trx without Counters -> failed is null, not 0'
+Remove-Item -LiteralPath $trxEmpty
+
+$trxBroken = New-TempFile 'parse-events-broken.trx' '<TestRun><ResultSummary>'
+$tb = Read-TrxSummary -Path $trxBroken
+Assert-Equal $false $tb.found 'unparsable trx -> found false'
+Assert-Equal $null $tb.total 'unparsable trx -> total is null'
+Remove-Item -LiteralPath $trxBroken
+
+$trxMissing = Read-TrxSummary -Path (Join-Path ([IO.Path]::GetTempPath()) 'does-not-exist.trx')
+Assert-Equal $false $trxMissing.found 'missing trx -> found false'
+Assert-Equal $null $trxMissing.passed 'missing trx -> passed is null'
+
+$jscpd = New-TempFile 'parse-events-sample-jscpd.json' '{"statistics":{"total":{"lines":100,"sources":5,"clones":2,"duplicatedLines":12,"percentage":12.0}}}'
 $j = Read-JscpdSummary -Path $jscpd
+Assert-Equal $true $j.found 'jscpd found'
 Assert-Equal 5 $j.sources 'jscpd sources'
 Assert-Equal 2 $j.clones 'jscpd clones'
 Assert-Equal 12 $j.percentage 'jscpd percentage'
-Remove-Item $jscpd
+Remove-Item -LiteralPath $jscpd
+
+$jscpdBroken = New-TempFile 'parse-events-broken-jscpd.json' '{"statistics":'
+$jb = Read-JscpdSummary -Path $jscpdBroken
+Assert-Equal $false $jb.found 'unparsable jscpd report -> found false'
+Assert-Equal 0 $jb.sources 'unparsable jscpd report -> sources 0'
+Remove-Item -LiteralPath $jscpdBroken
+
 $missing = Read-JscpdSummary -Path (Join-Path ([IO.Path]::GetTempPath()) 'does-not-exist-jscpd.json')
-Assert-Equal 0 $missing.sources 'jscpd missing report -> sources 0'
+Assert-Equal $false $missing.found 'missing jscpd report -> found false'
+Assert-Equal 0 $missing.sources 'missing jscpd report -> sources 0'
 
 if ($failures -gt 0) { Write-Host "$failures assertion(s) failed"; exit 1 }
 Write-Host 'Test-ParseEvents: all assertions passed'
@@ -3306,6 +3390,8 @@ Expected: an error that `Parse-Events.ps1` cannot be found (dot-source fails), e
 ```powershell
 #requires -Version 7
 # Pure functions used by run.ps1. Dot-source this file. Tested by Test-ParseEvents.ps1.
+# Every -Path is resolved against $PWD on entry: .NET APIs resolve relative paths against the process
+# working directory, which diverges from $PWD as soon as the runner does Push-Location.
 
 function Get-Prop($object, [string]$name) {
     # Property access that returns $null instead of throwing when the property is absent.
@@ -3317,52 +3403,70 @@ function Get-Prop($object, [string]$name) {
 
 function ConvertFrom-AgentEvents {
     # Reads a `claude -p --output-format stream-json --verbose` transcript and returns one metrics object.
+    # saw_result distinguishes "the run reported success" from "the transcript stops mid-stream"; a
+    # killed or truncated run leaves every result field $null, which must not be read as a zero.
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
+
+    $Path = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($Path)
 
     $m = [ordered]@{
         read_calls = 0; grep_calls = 0; glob_calls = 0; edit_calls = 0; write_calls = 0
         bash_calls = 0; bash_search_calls = 0; files_read_distinct = 0
         cost_usd = $null; num_turns = $null; duration_ms = $null; duration_api_ms = $null
         input_tokens = $null; output_tokens = $null; cache_read_tokens = $null; cache_create_tokens = $null
-        ended = $null; is_error = $null; permission_denials = 0
+        ended = $null; terminal_reason = $null; stop_reason = $null; is_error = $null
+        permission_denials = 0; saw_result = $false; skipped_lines = 0
     }
     $files = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $seenToolIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 
     foreach ($line in [System.IO.File]::ReadLines($Path)) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        try { $e = $line | ConvertFrom-Json -Depth 100 } catch { continue }
+        try { $e = $line | ConvertFrom-Json } catch { $m.skipped_lines++; continue }
         switch (Get-Prop $e 'type') {
             'assistant' {
                 foreach ($block in @(Get-Prop (Get-Prop $e 'message') 'content')) {
                     if ((Get-Prop $block 'type') -ne 'tool_use') { continue }
-                    $input = Get-Prop $block 'input'
+                    # The CLI can emit the same assistant message twice (once with its thinking block,
+                    # once with the tool_use block), so count each tool_use id at most once.
+                    $id = Get-Prop $block 'id'
+                    if ($id -and -not $seenToolIds.Add([string]$id)) { continue }
+                    $toolInput = Get-Prop $block 'input'
                     switch (Get-Prop $block 'name') {
-                        'Read'  { $m.read_calls++; $f = Get-Prop $input 'file_path'; if ($f) { [void]$files.Add([string]$f) } }
+                        'Read'  {
+                            $m.read_calls++
+                            $f = Get-Prop $toolInput 'file_path'
+                            if ($f) { [void]$files.Add(([string]$f -replace '\\', '/')) }   # same file, either separator
+                        }
                         'Grep'  { $m.grep_calls++ }
                         'Glob'  { $m.glob_calls++ }
                         'Edit'  { $m.edit_calls++ }
                         'Write' { $m.write_calls++ }
                         'Bash'  {
                             $m.bash_calls++
-                            if ([string](Get-Prop $input 'command') -match '^\s*(ls|dir|find|grep|rg|git\s+grep)\b') { $m.bash_search_calls++ }
+                            if ([string](Get-Prop $toolInput 'command') -match '^\s*(ls|dir|find|grep|rg|git\s+grep)\b') { $m.bash_search_calls++ }
                         }
                     }
                 }
             }
             'result' {
+                $m.saw_result = $true
                 $m.cost_usd = Get-Prop $e 'total_cost_usd'
                 $m.num_turns = Get-Prop $e 'num_turns'
                 $m.duration_ms = Get-Prop $e 'duration_ms'
                 $m.duration_api_ms = Get-Prop $e 'duration_api_ms'
                 $m.ended = Get-Prop $e 'subtype'
+                $m.terminal_reason = Get-Prop $e 'terminal_reason'   # verbatim, e.g. budget_exhausted
+                $m.stop_reason = Get-Prop $e 'stop_reason'           # verbatim, e.g. end_turn
                 $m.is_error = [bool](Get-Prop $e 'is_error')
                 $usage = Get-Prop $e 'usage'
                 $m.input_tokens = Get-Prop $usage 'input_tokens'
                 $m.output_tokens = Get-Prop $usage 'output_tokens'
                 $m.cache_read_tokens = Get-Prop $usage 'cache_read_input_tokens'
                 $m.cache_create_tokens = Get-Prop $usage 'cache_creation_input_tokens'
-                $m.permission_denials = @(Get-Prop $e 'permission_denials').Count
+                $denials = Get-Prop $e 'permission_denials'
+                $m.permission_denials = if ($null -eq $denials) { 0 } else { @($denials).Count }   # @($null).Count is 1
             }
         }
     }
@@ -3375,7 +3479,9 @@ function Get-TaskSpec {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
-    $lines = @(Get-Content -Path $Path -Encoding utf8)
+    $Path = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($Path)
+
+    $lines = @(Get-Content -LiteralPath $Path -Encoding utf8)
     if ($lines.Count -lt 3 -or $lines[0].Trim() -ne '---') { throw "Task file $Path has no front matter" }
     $end = 1
     while ($end -lt $lines.Count -and $lines[$end].Trim() -ne '---') { $end++ }
@@ -3389,11 +3495,13 @@ function Get-TaskSpec {
 
     function Split-Globs([string]$value) { @($value -split ',\s*' | Where-Object { $_ -ne '' }) }
 
+    # A function returning an empty array yields nothing, which lands as $null; @(...) at the call site
+    # keeps an absent scope an empty list, so "no scope" never silently becomes "everything is in scope".
     return [pscustomobject]@{
         id     = $meta['id']
         title  = $meta['title']
         kind   = $meta['kind']
-        scope  = @{ sliced = Split-Globs $meta['scope.sliced']; layered = Split-Globs $meta['scope.layered'] }
+        scope  = @{ sliced = @(Split-Globs $meta['scope.sliced']); layered = @(Split-Globs $meta['scope.layered']) }
         prompt = $body
         path   = $Path
     }
@@ -3401,6 +3509,9 @@ function Get-TaskSpec {
 
 function ConvertTo-GlobRegex {
     # `*` = one path segment, `**` = any depth, `?` = one character. Paths are compared with forward slashes.
+    # Callers match with -match, which is case-insensitive, and .NET's `$` also matches before a trailing
+    # newline. Git paths are case-sensitive, so this is looser than git on Linux; on Windows, where the
+    # experiment runs and the filesystem is case-insensitive anyway, it is the behaviour we want.
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Glob)
 
@@ -3424,9 +3535,14 @@ function ConvertTo-GlobRegex {
 }
 
 function Test-PathInScope {
+    # An empty or absent glob list means "nothing is in scope", never "everything is".
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Globs)
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][string[]]$Globs
+    )
 
+    if ($null -eq $Globs -or $Globs.Count -eq 0) { return $false }
     $p = $Path -replace '\\', '/'
     foreach ($glob in $Globs) {
         if ($p -match (ConvertTo-GlobRegex -Glob $glob)) { return $true }
@@ -3435,27 +3551,38 @@ function Test-PathInScope {
 }
 
 function Read-TrxSummary {
-    # Reads the Counters element of a VSTest .trx file.
+    # Reads the Counters element of a VSTest .trx file. found is $false when the file is missing,
+    # unparsable or has no Counters; the counts are then $null, so "no test run" is never read as
+    # "zero failures" — the runner turns a missing summary into a note instead of a green row.
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
-    if (-not (Test-Path -Path $Path)) { return [pscustomobject]@{ total = $null; passed = $null; failed = $null } }
-    [xml]$x = Get-Content -Path $Path -Raw
+    $Path = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($Path)
+    $none = [pscustomobject]@{ found = $false; total = $null; passed = $null; failed = $null }
+    if (-not (Test-Path -LiteralPath $Path)) { return $none }
+    try { [xml]$x = Get-Content -LiteralPath $Path -Raw } catch { return $none }
     $c = $x.TestRun.ResultSummary.Counters
-    return [pscustomobject]@{ total = [int]$c.total; passed = [int]$c.passed; failed = [int]$c.failed }
+    if ($null -eq $c) { return $none }
+    return [pscustomobject]@{ found = $true; total = [int]$c.total; passed = [int]$c.passed; failed = [int]$c.failed }
 }
 
 function Read-JscpdSummary {
-    # Reads statistics.total from jscpd's JSON reporter output. sources == 0 means jscpd analysed nothing.
+    # Reads statistics.total from jscpd's JSON reporter output. found is $false when the report is
+    # missing, unparsable or shaped differently; sources == 0 also means jscpd analysed nothing.
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
-    if (-not (Test-Path -Path $Path)) { return [pscustomobject]@{ sources = 0; clones = $null; percentage = $null } }
-    $j = Get-Content -Path $Path -Raw | ConvertFrom-Json -Depth 20
+    $Path = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($Path)
+    $none = [pscustomobject]@{ found = $false; sources = 0; clones = $null; percentage = $null }
+    if (-not (Test-Path -LiteralPath $Path)) { return $none }
+    try { $j = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json } catch { return $none }
+    $total = Get-Prop (Get-Prop $j 'statistics') 'total'
+    if ($null -eq $total) { return $none }
     return [pscustomobject]@{
-        sources    = [int]$j.statistics.total.sources
-        clones     = [int]$j.statistics.total.clones
-        percentage = [double]$j.statistics.total.percentage
+        found      = $true
+        sources    = [int]$total.sources
+        clones     = [int]$total.clones
+        percentage = [double]$total.percentage
     }
 }
 ```
@@ -3463,7 +3590,7 @@ function Read-JscpdSummary {
 - [ ] **Step 5: Run the test**
 
 Run: `pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/Test-ParseEvents.ps1`
-Expected: every line starts with `ok`, last line `Test-ParseEvents: all assertions passed`, exit code 0.
+Expected: 68 lines each starting with `ok`, then `Test-ParseEvents: all assertions passed`, exit code 0. In order: 23 assertions on the fixture transcript (the call counters, `skipped_lines (one truncated event line)`, `saw_result`, and the `result` fields including `terminal_reason` and `stop_reason`); 9 `truncated:` assertions; 3 on a result event carrying neither `permission_denials` nor `terminal_reason`; 5 task-spec assertions; 2 `relative path:` assertions; 4 scope-list assertions; 4 glob assertions; 10 `trx` assertions; 8 `jscpd` assertions. Any `FAIL` line names the metric and prints expected and actual.
 
 - [ ] **Step 6: Commit**
 
@@ -3520,6 +3647,7 @@ if ($Task -notcontains 'all') { $taskFiles = @($taskFiles | Where-Object { $Task
 if ($taskFiles.Count -eq 0) { throw "No task files match -Task $($Task -join ',')" }
 if (-not $ResultsDir) { $ResultsDir = Join-Path $PSScriptRoot "results/$(Get-Date -Format 'yyyyMMdd-HHmmss')" }
 New-Item -ItemType Directory -Force -Path $ResultsDir | Out-Null
+$ResultsDir = (Resolve-Path -LiteralPath $ResultsDir).Path        # a relative -ResultsDir must survive Push-Location
 $csv = Join-Path $ResultsDir 'results.csv'
 $runsRoot = Join-Path $env:TEMP 'vsa-runs'
 $behaviourProject = @{ sliced = 'tests/Orders.SliceTests'; layered = 'tests/Orders.IntegrationTests' }
@@ -3627,7 +3755,7 @@ foreach ($copyName in $copies) {
             Push-Location $dir
             try {
                 & git @git add -A
-                $changed = @(& git diff --cached --name-only)
+                $changed = @(& git -c core.quotepath=false diff --cached --name-only)   # keep non-ASCII paths readable
                 $numstat = @(& git diff --cached --numstat)
                 & git diff --cached | Set-Content -Path (Join-Path $artefacts 'diff.patch') -Encoding utf8
             }
@@ -3654,8 +3782,12 @@ foreach ($copyName in $copies) {
 
             $notes = @()
             if ($agent.exit -ne 0) { $notes += "claude exit $($agent.exit)" }
-            if ($m.ended -ne 'success') { $notes += "ended=$($m.ended)" }
+            if (-not $m.saw_result) { $notes += 'no result event' }        # transcript stops mid-stream: cost and tokens are unknown, not zero
+            elseif ($m.ended -ne 'success') { $notes += "ended=$($m.ended)" }
+            if ($m.skipped_lines -gt 0) { $notes += "$($m.skipped_lines) unparsable event lines" }
             if ($m.permission_denials -gt 0) { $notes += "$($m.permission_denials) permission denials" }
+            if (-not $archSum.found) { $notes += 'no arch trx (build failed?)' }
+            if (-not $behSum.found) { $notes += 'no behaviour trx (build failed?)' }
             if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
 
             $row = [pscustomobject][ordered]@{
@@ -3664,7 +3796,8 @@ foreach ($copyName in $copies) {
                 cost_usd = $m.cost_usd; num_turns = $m.num_turns; duration_ms = $m.duration_ms; duration_api_ms = $m.duration_api_ms
                 input_tokens = $m.input_tokens; output_tokens = $m.output_tokens
                 cache_read_tokens = $m.cache_read_tokens; cache_create_tokens = $m.cache_create_tokens
-                ended = $m.ended; is_error = $m.is_error; permission_denials = $m.permission_denials
+                ended = $m.ended; terminal_reason = $m.terminal_reason; stop_reason = $m.stop_reason
+                is_error = $m.is_error; permission_denials = $m.permission_denials; skipped_lines = $m.skipped_lines
                 files_read_distinct = $m.files_read_distinct; read_calls = $m.read_calls; grep_calls = $m.grep_calls; glob_calls = $m.glob_calls
                 edit_calls = $m.edit_calls; write_calls = $m.write_calls; bash_calls = $m.bash_calls; bash_search_calls = $m.bash_search_calls
                 gate_blocks = $gateBlocks; gate_blocks_build = $gateBlocksBuild
