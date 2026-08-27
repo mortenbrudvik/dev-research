@@ -465,7 +465,14 @@ builder.Services.AddDbContext<OrdersDbContext>(options =>
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddFeatureHandlers();
-builder.Services.AddProblemDetails();
+builder.Services.AddProblemDetails(options => options.CustomizeProblemDetails = context =>
+{
+    // Outside Production, put the exception message in the 500 body so a failing test or curl says why.
+    if (!builder.Environment.IsProduction() && context.Exception is not null)
+    {
+        context.ProblemDetails.Detail = context.Exception.Message;
+    }
+});
 builder.Services.AddExceptionHandler<DomainExceptionHandler>();
 
 var app = builder.Build();
@@ -511,7 +518,7 @@ dotnet build --nologo
 dotnet ef migrations add InitialCreate --project src/Orders.Api --output-dir Platform/Persistence/Migrations
 ```
 
-Expected: `Build succeeded.`; then `Done. To undo this action, use 'ef migrations remove'` and three files under `src/Orders.Api/Platform/Persistence/Migrations/` (`<timestamp>_InitialCreate.cs`, `.Designer.cs`, `OrdersDbContextModelSnapshot.cs`). Open the migration: it creates tables `Orders` (Id, CustomerId, Status, CreatedAt, ShippedAt, CancelledAt) and `OrderLines` (Id autoincrement, OrderId, Sku, Quantity, UnitPrice).
+Expected: `Build succeeded.`; then `Done. To undo this action, use 'ef migrations remove'` and three files under `src/Orders.Api/Platform/Persistence/Migrations/` (`<timestamp>_InitialCreate.cs`, `.Designer.cs`, `OrdersDbContextModelSnapshot.cs`). Open the migration: it creates tables `Orders` (Id, CustomerId, Status, and CreatedAt/ShippedAt/CancelledAt as `INTEGER` — `table.Column<long>` — because of the binary converter) and `OrderLines` (Id autoincrement, OrderId, Sku, Quantity, UnitPrice).
 
 - [ ] **Step 6: Run once to see the empty API start**
 
@@ -2291,7 +2298,14 @@ builder.Host.UseDefaultServiceProvider(options =>
 
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration.GetConnectionString("Orders") ?? "Data Source=orders.db");
-builder.Services.AddProblemDetails();
+builder.Services.AddProblemDetails(options => options.CustomizeProblemDetails = context =>
+{
+    // Outside Production, put the exception message in the 500 body so a failing test or curl says why.
+    if (!builder.Environment.IsProduction() && context.Exception is not null)
+    {
+        context.ProblemDetails.Detail = context.Exception.Message;
+    }
+});
 builder.Services.AddExceptionHandler<DomainExceptionHandler>();
 
 var app = builder.Build();
