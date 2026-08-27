@@ -2333,7 +2333,7 @@ using Orders.Domain.Exceptions;
 
 namespace Orders.Api.Common;
 
-/// <summary>A DomainException anywhere in a handler becomes a 409 ProblemDetails, identical in shape to Results.Problem.</summary>
+/// <summary>A DomainException raised anywhere in the application layer becomes a 409 ProblemDetails, identical in shape to Results.Problem.</summary>
 public sealed class DomainExceptionHandler(IProblemDetailsService problemDetails) : IExceptionHandler
 {
     // Safety net: in the baseline no handler lets a DomainException escape (policies are checked first and answer
@@ -2497,7 +2497,8 @@ Replace `src/Orders.Api/appsettings.json` with the content from Task 3, Step 4. 
 
   <ItemGroup>
     <ProjectReference Include="..\Orders.Application\Orders.Application.csproj" />
-    <ProjectReference Include="..\Orders.Domain\Orders.Domain.csproj" />   <!-- explicit: the endpoints use Orders.Domain.Enums -->
+    <!-- explicit rather than transitive: the endpoints use Orders.Domain.Enums directly -->
+    <ProjectReference Include="..\Orders.Domain\Orders.Domain.csproj" />
     <ProjectReference Include="..\Orders.Infrastructure\Orders.Infrastructure.csproj" />
   </ItemGroup>
 
@@ -2561,6 +2562,10 @@ using Orders.Infrastructure.Persistence;
 
 namespace Orders.IntegrationTests;
 
+/// <summary>
+/// Boots the API in-process against a fresh SQLite file. xUnit creates one fixture per test class
+/// (IClassFixture), so classes never share state.
+/// </summary>
 public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
 {
     private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"orders-integrationtests-{Guid.NewGuid():N}.db");
@@ -2602,6 +2607,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
         return await action(scope.ServiceProvider.GetRequiredService<OrdersDbContext>());
     }
 
+    /// <summary>Inserts an order directly, bypassing the API, so tests can start from any status.</summary>
     public Task<Guid> SeedOrderAsync(string customerId, OrderStatus status = OrderStatus.Pending, DateTimeOffset? createdAt = null) =>
         WithDb(async db =>
         {
