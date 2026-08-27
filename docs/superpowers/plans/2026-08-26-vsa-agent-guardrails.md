@@ -1434,6 +1434,22 @@ namespace Fixture.Platform
         public static string Format(object value) => value.ToString() ?? "";
     }
 }
+
+namespace Fixture.Features
+{
+    public static class SharedHelper   // a type directly under Features, outside any slice — the shared-code shortcut
+    {
+        public static string Format(string value) => value.ToUpperInvariant();
+    }
+}
+
+namespace Fixture.Features.D
+{
+    public sealed class DUser
+    {
+        public string Handle() => Fixture.Features.SharedHelper.Format("d");   // slice D uses the shortcut
+    }
+}
 ```
 
 - [ ] **Step 3: Write the negative-control tests first**
@@ -1454,12 +1470,23 @@ public class NegativeControl
     private static readonly Architecture FixtureArchitecture =
         new ArchLoader().LoadAssemblies(typeof(global::Fixture.Features.A.AHandler).Assembly).Build();
 
+    private const string RestoreFixture = "the fixture no longer violates the rule — restore tests/Orders.ArchitectureTests.Fixture/Violations.cs";
+
     [Fact]
     public void Slice_rule_fails_on_a_cross_slice_dependency()
     {
         var rule = Slices().Matching("Fixture.Features.(*)").Should().NotDependOnEachOther();
 
-        Assert.False(rule.HasNoViolations(FixtureArchitecture));
+        Assert.False(rule.HasNoViolations(FixtureArchitecture), RestoreFixture);
+    }
+
+    [Fact]
+    public void Shared_code_rule_fails_when_a_slice_uses_a_type_directly_under_features()
+    {
+        var rule = Types().That().ResideInNamespaceMatching(@"^Fixture\.Features\.")
+            .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Fixture(?!\.(Features\.|Domain|Platform))"));
+
+        Assert.False(rule.HasNoViolations(FixtureArchitecture), RestoreFixture);
     }
 
     [Fact]
@@ -1468,7 +1495,7 @@ public class NegativeControl
         var rule = Types().That().ResideInNamespaceMatching(@"^Fixture\.Domain")
             .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Fixture\.(Features|Platform)"));
 
-        Assert.False(rule.HasNoViolations(FixtureArchitecture));
+        Assert.False(rule.HasNoViolations(FixtureArchitecture), RestoreFixture);
     }
 }
 ```
@@ -1476,7 +1503,7 @@ public class NegativeControl
 - [ ] **Step 4: Run — the negative controls must pass (the rules do fail on the fixture)**
 
 Run (in `sliced/`): `dotnet test tests/Orders.ArchitectureTests --nologo`
-Expected: `Passed! ... Passed: 2, Total: 2`. If a negative control fails, the rule is not matching anything — fix the pattern before going on.
+Expected: `Passed! ... Passed: 3, Total: 3`. If a negative control fails, the rule is not matching anything — fix the pattern before going on.
 
 - [ ] **Step 5: The real rules**
 
@@ -1491,15 +1518,33 @@ using static ArchUnitNET.Fluent.Slices.SliceRuleDefinition;
 
 namespace Orders.ArchitectureTests;
 
+/// <summary>
+/// The sliced copy's rules. A slice is one flat namespace, Orders.Api.Features.[UseCase]: ArchUnitNET treats a
+/// sub-namespace (Features.X.Internal) as a separate slice, so every file of a slice lives in its folder root.
+/// </summary>
 public class SliceRules
 {
+    private const string SlicePattern = "Orders.Api.Features.(*)";
+
     private static readonly Architecture Api =
         new ArchLoader().LoadAssemblies(typeof(Program).Assembly).Build();
 
     [Fact]
+    public void The_slice_pattern_still_matches_slices() =>
+        // A slice rule passes vacuously when its pattern matches nothing; this keeps the rule below honest.
+        Assert.NotEmpty(Api.Types.Where(t => t.Namespace.FullName.StartsWith("Orders.Api.Features.", StringComparison.Ordinal)));
+
+    [Fact]
     public void Slices_do_not_depend_on_each_other() =>
-        Slices().Matching("Orders.Api.Features.(*)")
+        Slices().Matching(SlicePattern)
             .Should().NotDependOnEachOther()
+            .Check(Api);
+
+    [Fact]
+    public void Slices_depend_only_on_domain_platform_and_frameworks() =>
+        // Anything else under Orders.Api — a type directly in Features, a Common/ or Helpers/ namespace — is a shared-code shortcut.
+        Types().That().ResideInNamespaceMatching(@"^Orders\.Api\.Features\.")
+            .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Orders\.Api(?!\.(Features\.|Domain|Platform))"))
             .Check(Api);
 
     [Fact]
@@ -1519,12 +1564,12 @@ public class SliceRules
 - [ ] **Step 6: Run all architecture tests**
 
 Run: `dotnet test tests/Orders.ArchitectureTests --nologo`
-Expected: `Passed! ... Passed: 5, Total: 5`.
+Expected: `Passed! ... Passed: 8, Total: 8` (three negative controls, five rules).
 
 - [ ] **Step 7: Prove the slice rule bites on the real code, then revert**
 
 Temporarily add to `src/Orders.Api/Features/GetOrder/GetOrderHandler.cs` a field `private readonly Orders.Api.Features.CreateOrder.CreateOrderResponse? _leak;` (with `#pragma warning disable CS0169, CS0649` on the line above it, because warnings are errors), run `dotnet test tests/Orders.ArchitectureTests --nologo`.
-Expected: `Failed Orders.ArchitectureTests.SliceRules.Slices_do_not_depend_on_each_other` with a message naming `GetOrderHandler` and `CreateOrderResponse`. Then `git checkout -- src/Orders.Api/Features/GetOrder/GetOrderHandler.cs` and re-run: 5 passed.
+Expected: `Failed Orders.ArchitectureTests.SliceRules.Slices_do_not_depend_on_each_other` with a message naming `GetOrderHandler` and `CreateOrderResponse`. Then `git checkout -- src/Orders.Api/Features/GetOrder/GetOrderHandler.cs` and re-run: 8 passed.
 
 - [ ] **Step 8: Commit**
 
@@ -1559,9 +1604,12 @@ git commit -m "vsa-agent-guardrails(sliced): architecture tests with negative co
 - One use case = one folder under `src/Orders.Api/Features/<UseCase>/`, holding the request, the response,
   the validator (commands only), the handler and the endpoint. `Features/CreateOrder/` is the reference slice:
   copy its shape, not its logic.
-- Slices never reference other slices. Code that two slices need lives in `src/Orders.Api/Domain/`
-  (entities, value objects, policies) or `src/Orders.Api/Platform/` (persistence, endpoint discovery, HTTP
-  concerns). There is no `Common/`, `Shared/` or `Helpers/` folder; do not create one.
+- A slice is one flat namespace, `Orders.Api.Features.<UseCase>`: keep all of its files in the folder root. A
+  sub-folder such as `Validators/` becomes a separate namespace, which the architecture test counts as another slice.
+- Slices never reference other slices, and depend only on `Domain/`, `Platform/` and framework packages. Code
+  that two slices need lives in `src/Orders.Api/Domain/` (entities, value objects, policies) or
+  `src/Orders.Api/Platform/` (persistence, endpoint discovery, HTTP concerns). There is no `Common/`, `Shared/`
+  or `Helpers/` folder and no type directly under `Features/`; the architecture test fails on any of them.
 - Handlers are discovered by name (`*Handler` under `Features`) and endpoints by `IEndpoint`; nothing is
   registered in `Program.cs` per slice. An endpoint class needs a public parameterless constructor — take
   dependencies as parameters of the route delegate, not of the class.
@@ -1634,7 +1682,7 @@ fi
 for project in $projects; do
   if ! out=$(dotnet test "$project" --nologo -v q 2>&1); then
     echo "$(stamp) $event exit=2 $project" >> .gate.log
-    printf '%s\n' "$out" | tail -40 >&2
+    printf '%s\n' "$out" | grep -v '^ *at ' | tail -60 >&2   # drop stack frames so the failure messages survive the cut
     exit 2
   fi
 done
@@ -3380,7 +3428,7 @@ Prerequisites: `claude` logged in on this machine (`claude --version` prints `2.
 - [ ] **Step 1: Run the smoke test**
 
 Run: `pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1`
-Expected: `== baseline check: sliced`, `== run sliced-T1-1 (Ship an order)`, then a summary line such as `cost $3.12  turns 24  files_read 9  changed 6  out_of_scope 0  build True  behaviour 17/17  arch 5/5  total so far $3.12`, then `Results: ...results/<timestamp>/results.csv`. Open the CSV: one data row with every column filled (`notes` may be empty). Look at `events.jsonl`, `diff.patch` and `gate.log` in the run's artefact folder; the diff should show a new `Features/ShipOrder/` folder and a new test class. If `behaviour_tests_failed` is not 0 or `files_out_of_scope` is not 0, that is a finding, not a harness error — keep it.
+Expected: `== baseline check: sliced`, `== run sliced-T1-1 (Ship an order)`, then a summary line such as `cost $3.12  turns 24  files_read 9  changed 6  out_of_scope 0  build True  behaviour 17/17  arch 8/8  total so far $3.12`, then `Results: ...results/<timestamp>/results.csv`. Open the CSV: one data row with every column filled (`notes` may be empty). Look at `events.jsonl`, `diff.patch` and `gate.log` in the run's artefact folder; the diff should show a new `Features/ShipOrder/` folder and a new test class. If `behaviour_tests_failed` is not 0 or `files_out_of_scope` is not 0, that is a finding, not a harness error — keep it.
 
 If the run ends with `ended=error_max_budget_usd` or `claude exit 1` in `notes`, raise `-MaxBudgetUsd` and repeat once; if it ends with permission denials, inspect `stderr.txt` and `events.jsonl` for the denied tool.
 
@@ -3433,6 +3481,8 @@ over the repetitions, with the range in parentheses.
 
 Three repetitions; one model; one prompt per task; the layered copy is a well-structured layered app, not a big ball of mud;
 the harness denies `cat`/`head`/`tail`/`sed` so file reads are countable, which changes agent behaviour slightly but equally for both copies.
+Limits of the architecture rules as an instrument: ArchUnitNET treats a sub-namespace inside a slice as a separate slice (the sliced
+`CLAUDE.md` says so), and a slice rule passes vacuously when its pattern matches nothing (guarded by a presence test).
 
 ## Raw data
 
@@ -3652,7 +3702,7 @@ pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/Test-ParseEvents.
 git status --short
 ```
 
-Expected: both `dotnet test` runs report `Passed!` for every project (14 behaviour + 5 architecture tests in each copy); `Test-ParseEvents: all assertions passed`; `0` warnings from the strict site build (the prototype is outside `docs/`); `git status` shows only the untracked/modified files of this task.
+Expected: both `dotnet test` runs report `Passed!` for every project (14 behaviour tests in each copy; 8 architecture tests in `sliced/`, 5 in `layered/`); `Test-ParseEvents: all assertions passed`; `0` warnings from the strict site build (the prototype is outside `docs/`); `git status` shows only the untracked/modified files of this task.
 
 - [ ] **Step 3: Commit**
 

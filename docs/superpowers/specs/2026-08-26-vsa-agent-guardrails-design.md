@@ -132,7 +132,7 @@ Four projects. Handlers are the same classes moved into `Orders.Application` beh
 | Guardrail (guide section) | `sliced/` | `layered/` |
 |---|---|---|
 | Rules file (7.2) | `CLAUDE.md`: commands, slice rules, reference slice, stop-and-ask for `Domain/`/`Platform/`, never touch migrations | `CLAUDE.md`: commands, layer rules, reference command, stop-and-ask for `Orders.Domain`/`Orders.Infrastructure`, never touch migrations |
-| Architecture test (7.1) | slices independent; slices → Domain/Platform only | Domain → nothing; Application ↛ Infrastructure, Api |
+| Architecture test (7.1) | slices independent; slices → Domain/Platform/frameworks only (so no type directly under `Features/` and no `Common/`); Domain ↛ Features/Platform; Platform ↛ Features; plus a presence test so the slice pattern cannot pass vacuously. A slice is one flat namespace — ArchUnitNET counts a sub-namespace as another slice (stated in the sliced `CLAUDE.md`) | Domain → nothing; Application ↛ Infrastructure, Api |
 | Hooks (7.3) | PostToolUse (Edit/Write) → `gate.sh` runs the architecture tests; Stop → `gate.sh` runs the architecture tests, then the behaviour tests (running the full suite after every edit would multiply run time and context) | same, this copy's projects |
 | Duplication gate (7.6) | `.jscpd.json`, run by the harness, not by the hook (cost) | same |
 
