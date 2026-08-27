@@ -1675,7 +1675,8 @@ git commit -m "vsa-agent-guardrails(sliced): architecture tests with negative co
 # Guardrail gate for Claude Code.
 #   PostToolUse (Edit|Write of a .cs/.csproj/.props file): architecture tests.
 #   Stop, or an event that could not be parsed:            architecture tests, then the behaviour tests.
-# Exit 2 (blocking) with the failure text on stderr. Appends one line per invocation to .gate.log:
+# Exit 2 (blocking) with the failure text on stderr; a missing CLAUDE_PROJECT_DIR exits 1 (non-blocking: the
+# user's environment, not the agent's change). Appends one line per invocation to .gate.log:
 #   <utc time> <event> exit=0 | exit=2 <project> build|test | skipped <reason>
 cd "${CLAUDE_PROJECT_DIR:?CLAUDE_PROJECT_DIR is not set}" || exit 2
 input=$(cat)
