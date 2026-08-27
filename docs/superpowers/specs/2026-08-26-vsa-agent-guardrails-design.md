@@ -111,7 +111,7 @@ Four use cases, four routes, identical request and response JSON in both copies:
 | GetOrder | `GET /orders/{id}` | `404` or `200` with the order |
 | ListOrders | `GET /orders?status=` | optional status filter, newest first |
 
-Validation failures return `400` ProblemDetails; domain-rule failures `409`. SQLite file per environment (`orders.db`), migrations applied at startup in Development and by the test fixtures.
+Validation failures return `400` ProblemDetails; domain-rule failures `409` ProblemDetails (`application/problem+json` on both paths). SQLite file per environment (`orders.db`), migrations applied at startup in Development and by the test fixtures. Timestamps are mapped with EF Core's `DateTimeOffsetToBinaryConverter` because SQLite stores `DateTimeOffset` as TEXT and EF Core refuses to order or compare it in SQL (found during implementation review, 2026-08-27).
 
 ### 4.2 Sliced copy
 

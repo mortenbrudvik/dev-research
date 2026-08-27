@@ -288,6 +288,7 @@ git commit -m "vsa-agent-guardrails(sliced): domain model"
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Orders.Api.Domain;
 
 namespace Orders.Api.Platform.Persistence;
@@ -303,6 +304,12 @@ public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) :
             order.HasKey(o => o.Id);
             order.Property(o => o.CustomerId).IsRequired().HasMaxLength(100);
             order.Property(o => o.Status).HasConversion<string>().HasMaxLength(20);
+            // SQLite stores DateTimeOffset as TEXT and cannot order or compare it in SQL (EF Core throws
+            // NotSupportedException on ORDER BY). The binary converter stores an orderable INTEGER and
+            // round-trips the offset, so handlers can OrderBy/Where on these columns.
+            order.Property(o => o.CreatedAt).HasConversion<DateTimeOffsetToBinaryConverter>();
+            order.Property(o => o.ShippedAt).HasConversion<DateTimeOffsetToBinaryConverter>();
+            order.Property(o => o.CancelledAt).HasConversion<DateTimeOffsetToBinaryConverter>();
             order.Ignore(o => o.Total);
             order.OwnsMany(o => o.Lines, line =>
             {
@@ -325,7 +332,11 @@ public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) :
 ```csharp
 namespace Orders.Api.Platform.Endpoints;
 
-/// <summary>Each slice exposes one endpoint class that maps its route(s).</summary>
+/// <summary>
+/// Each slice exposes one endpoint class that maps its route(s). Implementations are created with
+/// Activator.CreateInstance, so they need a public parameterless constructor: take dependencies as
+/// parameters of the route delegate, not of the class.
+/// </summary>
 public interface IEndpoint
 {
     void Map(IEndpointRouteBuilder app);
@@ -341,7 +352,8 @@ public static class EndpointExtensions
         var handlers = typeof(EndpointExtensions).Assembly.GetTypes()
             .Where(t => t.IsClass && !t.IsAbstract
                         && t.Name.EndsWith("Handler", StringComparison.Ordinal)
-                        && t.Namespace?.StartsWith(FeaturesNamespace, StringComparison.Ordinal) == true);
+                        && (t.Namespace == FeaturesNamespace
+                            || t.Namespace?.StartsWith(FeaturesNamespace + ".", StringComparison.Ordinal) == true));
         foreach (var handler in handlers)
         {
             services.AddScoped(handler);
@@ -372,14 +384,20 @@ using FluentValidation;
 
 namespace Orders.Api.Platform.Http;
 
-/// <summary>Runs the FluentValidation validator registered for TRequest, if any; 400 with ProblemDetails on failure.</summary>
+/// <summary>
+/// Runs the FluentValidation validator registered for TRequest; 400 with ProblemDetails on failure.
+/// Adding this filter to an endpoint is a statement that a validator exists, so a missing registration
+/// throws at request time (a 500 in the slice test) instead of silently skipping validation.
+/// </summary>
 public sealed class ValidationFilter<TRequest> : IEndpointFilter
 {
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
-        var validator = context.HttpContext.RequestServices.GetService<IValidator<TRequest>>();
+        var validator = context.HttpContext.RequestServices.GetService<IValidator<TRequest>>()
+            ?? throw new InvalidOperationException(
+                $"No validator is registered for {typeof(TRequest).Name}. Add a public class deriving from AbstractValidator<{typeof(TRequest).Name}> next to the request.");
         var request = context.Arguments.OfType<TRequest>().FirstOrDefault();
-        if (validator is not null && request is not null)
+        if (request is not null)
         {
             var result = await validator.ValidateAsync(request, context.HttpContext.RequestAborted);
             if (!result.IsValid)
@@ -406,7 +424,7 @@ public sealed class DomainExceptionHandler : IExceptionHandler
 {
     public async ValueTask<bool> TryHandleAsync(HttpContext httpContext, Exception exception, CancellationToken cancellationToken)
     {
-        if (exception is not DomainException)
+        if (exception is not DomainException || httpContext.Response.HasStarted)
         {
             return false;
         }
@@ -416,7 +434,7 @@ public sealed class DomainExceptionHandler : IExceptionHandler
             Status = StatusCodes.Status409Conflict,
             Title = "Business rule violated",
             Detail = exception.Message,
-        }, cancellationToken);
+        }, options: null, contentType: "application/problem+json", cancellationToken);   // same media type as Results.Problem
         return true;
     }
 }
@@ -434,6 +452,13 @@ using Orders.Api.Platform.Http;
 using Orders.Api.Platform.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Fail at startup, not on first request, when a handler depends on something that is not registered.
+builder.Host.UseDefaultServiceProvider(options =>
+{
+    options.ValidateOnBuild = true;
+    options.ValidateScopes = true;
+});
 
 builder.Services.AddDbContext<OrdersDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Orders") ?? "Data Source=orders.db"));
@@ -1485,7 +1510,10 @@ git commit -m "vsa-agent-guardrails(sliced): architecture tests with negative co
   (entities, value objects, policies) or `src/Orders.Api/Platform/` (persistence, endpoint discovery, HTTP
   concerns). There is no `Common/`, `Shared/` or `Helpers/` folder; do not create one.
 - Handlers are discovered by name (`*Handler` under `Features`) and endpoints by `IEndpoint`; nothing is
-  registered in `Program.cs` per slice.
+  registered in `Program.cs` per slice. An endpoint class needs a public parameterless constructor — take
+  dependencies as parameters of the route delegate, not of the class.
+- A command endpoint adds `.AddEndpointFilter<ValidationFilter<TRequest>>()`, which requires a public
+  `<Request>Validator` (`AbstractValidator<TRequest>`) in the slice; the filter throws if none is registered.
 - Every slice ships with a test class in `tests/Orders.SliceTests/<UseCase>Tests.cs` that sends the request
   through the endpoint and asserts the response and the persisted state. Use `ApiFixture`; do not mock the
   database.
@@ -2044,6 +2072,7 @@ git commit -m "vsa-agent-guardrails(layered): application layer"
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Orders.Application.Common.Interfaces;
 using Orders.Domain.Entities;
 
@@ -2060,6 +2089,12 @@ public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) :
             order.HasKey(o => o.Id);
             order.Property(o => o.CustomerId).IsRequired().HasMaxLength(100);
             order.Property(o => o.Status).HasConversion<string>().HasMaxLength(20);
+            // SQLite stores DateTimeOffset as TEXT and cannot order or compare it in SQL (EF Core throws
+            // NotSupportedException on ORDER BY). The binary converter stores an orderable INTEGER and
+            // round-trips the offset, so handlers can OrderBy/Where on these columns.
+            order.Property(o => o.CreatedAt).HasConversion<DateTimeOffsetToBinaryConverter>();
+            order.Property(o => o.ShippedAt).HasConversion<DateTimeOffsetToBinaryConverter>();
+            order.Property(o => o.CancelledAt).HasConversion<DateTimeOffsetToBinaryConverter>();
             order.Ignore(o => o.Total);
             order.OwnsMany(o => o.Lines, line =>
             {
@@ -2109,14 +2144,20 @@ using FluentValidation;
 
 namespace Orders.Api.Common;
 
-/// <summary>Runs the FluentValidation validator registered for TRequest, if any; 400 with ProblemDetails on failure.</summary>
+/// <summary>
+/// Runs the FluentValidation validator registered for TRequest; 400 with ProblemDetails on failure.
+/// Adding this filter to an endpoint is a statement that a validator exists, so a missing registration
+/// throws at request time (a 500 in the slice test) instead of silently skipping validation.
+/// </summary>
 public sealed class ValidationFilter<TRequest> : IEndpointFilter
 {
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
-        var validator = context.HttpContext.RequestServices.GetService<IValidator<TRequest>>();
+        var validator = context.HttpContext.RequestServices.GetService<IValidator<TRequest>>()
+            ?? throw new InvalidOperationException(
+                $"No validator is registered for {typeof(TRequest).Name}. Add a public class deriving from AbstractValidator<{typeof(TRequest).Name}> next to the request.");
         var request = context.Arguments.OfType<TRequest>().FirstOrDefault();
-        if (validator is not null && request is not null)
+        if (request is not null)
         {
             var result = await validator.ValidateAsync(request, context.HttpContext.RequestAborted);
             if (!result.IsValid)
@@ -2142,7 +2183,7 @@ public sealed class DomainExceptionHandler : IExceptionHandler
 {
     public async ValueTask<bool> TryHandleAsync(HttpContext httpContext, Exception exception, CancellationToken cancellationToken)
     {
-        if (exception is not DomainException)
+        if (exception is not DomainException || httpContext.Response.HasStarted)
         {
             return false;
         }
@@ -2152,7 +2193,7 @@ public sealed class DomainExceptionHandler : IExceptionHandler
             Status = StatusCodes.Status409Conflict,
             Title = "Business rule violated",
             Detail = exception.Message,
-        }, cancellationToken);
+        }, options: null, contentType: "application/problem+json", cancellationToken);   // same media type as Results.Problem
         return true;
     }
 }
@@ -2240,6 +2281,13 @@ using Orders.Infrastructure;
 using Orders.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Fail at startup, not on first request, when a handler depends on something that is not registered.
+builder.Host.UseDefaultServiceProvider(options =>
+{
+    options.ValidateOnBuild = true;
+    options.ValidateScopes = true;
+});
 
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration.GetConnectionString("Orders") ?? "Data Source=orders.db");
@@ -2576,7 +2624,9 @@ Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed
 - `src/Orders.Application`: one folder per command or query under `Orders/Commands/<Name>/` or `Orders/Queries/<Name>/`
   (command/query record, validator for commands, handler class), DTOs in `Orders/OrderDtos.cs`, the `IOrdersDbContext`
   abstraction in `Common/Interfaces/`. Register every handler in `DependencyInjection.cs`. `Orders/Commands/CreateOrder/`
-  is the reference command: copy its shape, not its logic. Depends on Domain only.
+  is the reference command: copy its shape, not its logic. Depends on Domain only. A command endpoint adds
+  `.AddEndpointFilter<ValidationFilter<TCommand>>()`, which requires a public `<Command>Validator` in the
+  command's folder; the filter throws if none is registered.
 - `src/Orders.Infrastructure`: `OrdersDbContext`, migrations, `DependencyInjection.cs`. Depends on Application and Domain.
 - `src/Orders.Api`: all routes in `Endpoints/OrdersEndpoints.cs`; HTTP concerns in `Common/`. Never reference
   `Orders.Infrastructure.Persistence` from the API; the composition root in `Program.cs` is the only exception.
