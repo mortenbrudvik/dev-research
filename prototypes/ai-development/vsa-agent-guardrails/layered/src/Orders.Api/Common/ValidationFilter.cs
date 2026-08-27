@@ -5,7 +5,7 @@ namespace Orders.Api.Common;
 /// <summary>
 /// Runs the FluentValidation validator registered for TRequest; 400 with ProblemDetails on failure.
 /// Adding this filter to an endpoint is a statement that a validator exists, so a missing registration
-/// throws at request time (a 500 in the slice test) instead of silently skipping validation.
+/// throws at request time (a 500 in the integration test) instead of silently skipping validation.
 /// </summary>
 public sealed class ValidationFilter<TRequest> : IEndpointFilter
 {
