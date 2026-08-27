@@ -9,6 +9,10 @@ using Orders.Infrastructure.Persistence;
 
 namespace Orders.IntegrationTests;
 
+/// <summary>
+/// Boots the API in-process against a fresh SQLite file. xUnit creates one fixture per test class
+/// (IClassFixture), so classes never share state.
+/// </summary>
 public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
 {
     private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"orders-integrationtests-{Guid.NewGuid():N}.db");
@@ -50,6 +54,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
         return await action(scope.ServiceProvider.GetRequiredService<OrdersDbContext>());
     }
 
+    /// <summary>Inserts an order directly, bypassing the API, so tests can start from any status.</summary>
     public Task<Guid> SeedOrderAsync(string customerId, OrderStatus status = OrderStatus.Pending, DateTimeOffset? createdAt = null) =>
         WithDb(async db =>
         {

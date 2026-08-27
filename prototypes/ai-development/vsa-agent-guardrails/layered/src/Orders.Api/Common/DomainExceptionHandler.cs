@@ -4,7 +4,7 @@ using Orders.Domain.Exceptions;
 
 namespace Orders.Api.Common;
 
-/// <summary>A DomainException anywhere in a handler becomes a 409 ProblemDetails, identical in shape to Results.Problem.</summary>
+/// <summary>A DomainException raised anywhere in the application layer becomes a 409 ProblemDetails, identical in shape to Results.Problem.</summary>
 public sealed class DomainExceptionHandler(IProblemDetailsService problemDetails) : IExceptionHandler
 {
     // Safety net: in the baseline no handler lets a DomainException escape (policies are checked first and answer
