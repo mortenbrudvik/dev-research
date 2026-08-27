@@ -4,18 +4,31 @@ namespace Orders.ArchitectureTests;
 
 /// <summary>
 /// Program.cs is a composition root: it registers services and calls the Map*Endpoints() extensions; it defines no
-/// routes. ArchUnitNET cannot enforce that — top-level statements compile into a <Main>$ method and closure types
-/// that it drops from the architecture — so this test reads the source file instead. The pattern is checked against
-/// a known route first so that a rotted pattern cannot pass vacuously.
+/// routes. ArchUnitNET cannot enforce that — top-level statements compile into a &lt;Main&gt;$ method and closure
+/// types that it drops from the architecture — so this test reads the source file instead. The pattern is checked
+/// against every route verb and against a legitimate Map*Endpoints() call first, so a rotted pattern cannot pass
+/// vacuously in either direction.
 /// </summary>
 public class CompositionRoot
 {
+    // app.Map(, app.MapGet( ... app.MapFallback(: the "(" right after the verb is what excludes app.MapEndpoints()
+    // and app.MapOrdersEndpoints().
     private static readonly Regex RouteRegistration =
-        new(@"\.Map(Get|Post|Put|Patch|Delete|Methods|Group|Fallback)\s*\(", RegexOptions.Compiled);
+        new(@"\.Map(Get|Post|Put|Patch|Delete|Methods|Group|Fallback)?\s*\(", RegexOptions.Compiled);
 
     [Fact]
-    public void The_route_pattern_still_matches_a_route() =>
-        Assert.Matches(RouteRegistration, "app.MapGet(\"/orders\", () => Results.Ok());");
+    public void The_route_pattern_matches_every_route_verb_and_no_endpoint_extension()
+    {
+        var routes = new[]
+        {
+            "app.Map(", "app.MapGet(", "app.MapPost(", "app.MapPut(", "app.MapPatch(",
+            "app.MapDelete(", "app.MapMethods(", "app.MapGroup(", "app.MapFallback(",
+        };
+
+        Assert.All(routes, r => Assert.Matches(RouteRegistration, r));
+        Assert.DoesNotMatch(RouteRegistration, "app.MapEndpoints();");
+        Assert.DoesNotMatch(RouteRegistration, "app.MapOrdersEndpoints();");
+    }
 
     [Fact]
     public void Program_cs_registers_no_routes()
@@ -24,7 +37,10 @@ public class CompositionRoot
 
         var routes = RouteRegistration.Matches(source).Select(m => m.Value).ToList();
 
-        Assert.Empty(routes);
+        if (routes.Count > 0)
+        {
+            Assert.Fail($"Program.cs is a composition root: move {string.Join(", ", routes)} into an endpoint class under src/Orders.Api (see CLAUDE.md).");
+        }
     }
 
     private static string ProgramCsPath()

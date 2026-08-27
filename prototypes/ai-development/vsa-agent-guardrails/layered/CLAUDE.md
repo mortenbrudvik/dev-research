@@ -5,7 +5,8 @@
 - Build: `dotnet build --nologo` — warnings are errors (`Directory.Build.props`): a nullable or unused-using
   warning fails the build.
 - Behaviour tests: `dotnet test tests/Orders.IntegrationTests --nologo` (add `--filter FullyQualifiedName~<UseCase>` for one)
-- Architecture tests: `dotnet test tests/Orders.ArchitectureTests --nologo` — fails on any dependency that points outward
+- Architecture tests: `dotnet test tests/Orders.ArchitectureTests --nologo` — fails on any dependency that crosses a
+  layer the wrong way, and on the API touching the database
 - Migrations: `dotnet tool restore` once, then
   `dotnet ef migrations add <Name> --project src/Orders.Infrastructure --startup-project src/Orders.Api --output-dir Persistence/Migrations`
 
@@ -22,9 +23,9 @@
 - `src/Orders.Api`: the `/orders` routes live in `Endpoints/OrdersEndpoints.cs`; a route outside `/orders` gets its
   own `Endpoints/<Name>Endpoints.cs` with a `Map<Name>Endpoints` extension called from `Program.cs`. HTTP concerns
   in `Common/`. Endpoints call handlers; never reference `Orders.Infrastructure.Persistence` or `IOrdersDbContext`
-  from the API — the composition root in `Program.cs` is the only exception, and it stays a composition root:
-  service registration and `Map<Name>Endpoints()` calls only. An architecture test reads the file and fails on
-  any `MapGet`/`MapPost`/... call in it.
+  from the API — the composition root in `Program.cs` is the only exception.
+- `Program.cs` is the composition root: service registration and `Map<Name>Endpoints()` calls only. Do not add
+  routes there — an architecture test reads the file and fails on any `Map`/`MapGet`/`MapPost`/... call in it.
 - An endpoint that binds a request body adds `.AddEndpointFilter<ValidationFilter<TCommand>>()`
   (`src/Orders.Api/Common/`), which requires a public `<Command>Validator` (`AbstractValidator<TCommand>`) in the
   command's folder; the filter throws if none is registered.
