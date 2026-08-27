@@ -4167,7 +4167,8 @@ over the repetitions, with the range in parentheses.
 ## Caveats
 
 Three repetitions; one model; one prompt per task; the layered copy is a well-structured layered app, not a big ball of mud;
-the harness denies `cat`/`head`/`tail`/`sed` so file reads are countable, which changes agent behaviour slightly but equally for both copies.
+the harness denies `cat`/`head`/`tail`/`sed` so file reads are countable, and the `PowerShell` tool is not on the allow-list at all —
+an agent on Windows reaches for both (the smoke run lost three turns to such denials); the friction is the same for both copies.
 Limits of the architecture rules as an instrument: ArchUnitNET treats a sub-namespace inside a slice as a separate slice (the sliced
 `CLAUDE.md` says so), and a slice rule passes vacuously when its pattern matches nothing (guarded by a presence test).
 Gate blocks: `gate_blocks_build` are compile errors on a half-written change, not rule violations; only the remainder are guardrail catches.
@@ -4179,8 +4180,10 @@ Mechanical coverage of the likely wrong moves is asymmetric by design — the sl
 under `Features/`, the layered rules only on Domain→up, Application→down and Api→persistence — and that asymmetry is part of what the
 experiment measures. The layered copy's likeliest shortcut, querying through `IOrdersDbContext` from an endpoint, is caught by a rule
 widened for fairness, not by the architecture.
-On T3 the sliced rules steer the agent to duplicate the order summary in the new slice while the layered scope sanctions sharing
-`OrderDtos.cs`, so a jscpd delta on T3 measures each architecture's sanctioned answer, not agent sloppiness. T3's scope globs
+Sanctioned duplication: a new slice copies the reference slice's handler and endpoint shape, so every slice-local task raises jscpd's
+clone count in the sliced copy (the smoke run's T1 went from 0 to 2 clones, 4.1 %) — read `dup_blocks_after - dup_blocks_before` as the
+architecture's answer, not as sloppiness. On T3 the sliced rules additionally steer the agent to duplicate the order summary in the new
+slice while the layered scope sanctions sharing `OrderDtos.cs`. T3's scope globs
 (`*Customer*`) accept any slice or query name containing "Customer"; an agent that instead adds a second route to the existing
 `ListOrders` use case takes an out-of-scope hit in either copy — a naming judgement, not sprawl, so discount it when reading `files_out_of_scope`.
 Wall time is not comparable across copies: the layered gate builds four projects per invocation, the sliced gate two.
