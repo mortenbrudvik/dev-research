@@ -40,7 +40,9 @@ Whatever the numbers say, they go into `experiment/REPORT.md` and, condensed, in
 ```
 prototypes/ai-development/vsa-agent-guardrails/
 ├── README.md                       what it demonstrates, how to build/test each copy, how to run the experiment, link to guide §10
-├── .gitignore                      *.db, .gate.log, experiment/results/* (except example-results.csv)
+├── .gitignore                      experiment/results/* (except example-results.csv) and the artefacts below at the prototype level
+├── .gitattributes                  *.sh text eol=lf — this machine has core.autocrlf=true; a CRLF gate.sh fails every hook on a fresh clone
+│   (each copy also carries its own .gitignore — bin/, obj/, *.db*, .gate.log, .jscpd-report/, .trx/ — because the runner copies the copy alone into a fresh git repository)
 ├── sliced/
 │   ├── Orders.sln
 │   ├── Directory.Build.props       net10.0, Nullable, ImplicitUsings, TreatWarningsAsErrors
@@ -131,7 +133,7 @@ Four projects. Handlers are the same classes moved into `Orders.Application` beh
 
 | Guardrail (guide section) | `sliced/` | `layered/` |
 |---|---|---|
-| Rules file (7.2) | `CLAUDE.md`: commands, slice rules, reference slice, stop-and-ask for `Domain/`/`Platform/`, never touch migrations | `CLAUDE.md`: commands, layer rules, reference command, stop-and-ask for `Orders.Domain`/`Orders.Infrastructure`, never touch migrations |
+| Rules file (7.2) | `CLAUDE.md`: commands, slice rules, reference slices, "say so in your final message and keep it minimal" for edits under `Domain/`/`Platform/` (a literal stop-and-ask would abort a non-interactive `claude -p` run), never touch migrations | `CLAUDE.md`: commands, layer rules, reference commands, the same wording for `Orders.Domain`/`Orders.Infrastructure`, never touch migrations |
 | Architecture test (7.1) | slices independent; slices → Domain/Platform/frameworks only (so no type directly under `Features/` and no `Common/`); Domain ↛ Features/Platform; Platform ↛ Features; plus a presence test so the slice pattern cannot pass vacuously. A slice is one flat namespace — ArchUnitNET counts a sub-namespace as another slice (stated in the sliced `CLAUDE.md`) | Domain → nothing; Application ↛ Infrastructure, Api |
 | Hooks (7.3) | PostToolUse (Edit/Write) → `gate.sh` runs the architecture tests; Stop → `gate.sh` runs the architecture tests, then the behaviour tests (running the full suite after every edit would multiply run time and context) | same, this copy's projects |
 | Duplication gate (7.6) | `.jscpd.json`, run by the harness, not by the hook (cost) | same |
@@ -173,7 +175,7 @@ Per run (copy × task × repetition):
     ```
 
     `dontAsk` denies tools outside the allow-list without prompting, but it still permits built-in read-only shell commands — measured on 2026-08-26: `ls` and `cat` ran with only `Read` allowed — so the content-dumping commands are denied explicitly, which forces file contents through `Read` where the runner can count them; `ls`, `find` and `grep` through Bash are counted as search calls. The stdin redirect avoids the CLI's 3-second wait for piped input. Wall time is measured by the runner. Event field names are those observed for 2.1.246 (section 5.3); if the CLI changes, `Parse-Events.ps1` is the one file to update.
-4. **After the run,** in the same directory: `dotnet build` (warnings as errors), `dotnet test` per test project with results captured, `git status --porcelain` and `git diff --numstat` against the baseline, `git diff > diff.patch`, `npx jscpd@5` (JSON reporter) before (cached per copy) and after.
+4. **After the run,** in the same directory: `dotnet build` (warnings as errors), `dotnet test` per test project with results captured, `git status --porcelain` and `git diff --numstat` against the baseline, `git diff > diff.patch`, `npx jscpd@4 src` (JSON reporter; the path is positional because jscpd's config `path` is a no-op on Windows) before (cached per copy) and after. The hooks in the copy's `.claude/settings.json` run as OS processes outside the permission system, so the tool allow-list does not constrain them — deliberate: the gate is part of the treatment.
 5. **Record** one row in `results.csv`, keep the per-run artefacts, delete the temporary directory unless `-KeepRuns`.
 
 The runner never edits the copies in the repository; a failed or interrupted run leaves nothing behind except its temporary directory.
@@ -186,7 +188,7 @@ The runner never edits the copies in the repository; a failed or interrupted run
 | `cost_usd, num_turns, duration_ms, duration_api_ms, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens` | the final `result` event of `stream-json`: `total_cost_usd`, `num_turns`, `duration_ms`, `duration_api_ms`, `usage.input_tokens`, `usage.output_tokens`, `usage.cache_read_input_tokens`, `usage.cache_creation_input_tokens` (observed on 2.1.246; `modelUsage` is kept in the per-run JSON) |
 | `ended, terminal_reason, is_error, permission_denials` | result event `subtype` (e.g. `success`), `terminal_reason` and `stop_reason` recorded verbatim, `is_error`, and the length of its `permission_denials` array — a budget stop shows up here and in `notes` |
 | `files_read_distinct, read_calls, grep_calls, glob_calls, edit_calls, write_calls, bash_calls, bash_search_calls` | `assistant` events, `message.content[]` blocks with `type == "tool_use"`, by `name`; `Read` → `input.file_path` deduplicated; `Bash` → `input.command`, counted as a search call when it starts with `ls`, `find`, `grep`, `rg` or `git grep` |
-| `gate_blocks` | lines with exit code 2 in the run directory's `.gate.log`, written by `gate.sh` |
+| `gate_blocks, gate_blocks_build` | lines with exit code 2 in the run directory's `.gate.log`, written by `gate.sh`; the `build` subset are compile errors on a half-written change (not rule violations), so guardrail catches are the difference |
 | `files_changed, lines_added, lines_deleted` | `git status --porcelain`, `git diff --numstat` |
 | `files_out_of_scope` | changed paths not matching the task's scope globs for this copy |
 | `build_ok, behaviour_tests_passed, behaviour_tests_failed, arch_tests_passed, arch_tests_failed` | `dotnet build` / `dotnet test` exit codes and TRX summaries |

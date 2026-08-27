@@ -1601,30 +1601,34 @@ git commit -m "vsa-agent-guardrails(sliced): architecture tests with negative co
 
 ## Commands
 
-- Build: `dotnet build --nologo`
+- Build: `dotnet build --nologo` — warnings are errors (`Directory.Build.props`): a nullable or unused-using
+  warning fails the build.
 - Behaviour tests: `dotnet test tests/Orders.SliceTests --nologo` (add `--filter FullyQualifiedName~<UseCase>` for one slice)
 - Architecture tests: `dotnet test tests/Orders.ArchitectureTests --nologo` — fails on any dependency between slices
-- Migrations: `dotnet ef migrations add <Name> --project src/Orders.Api --output-dir Platform/Persistence/Migrations`
+- Migrations: `dotnet tool restore` once, then
+  `dotnet ef migrations add <Name> --project src/Orders.Api --output-dir Platform/Persistence/Migrations`
 
 ## Layout rules
 
-- One use case = one folder under `src/Orders.Api/Features/<UseCase>/`, holding the request, the response,
-  the validator (commands only), the handler and the endpoint. `Features/CreateOrder/` is the reference slice:
-  copy its shape, not its logic.
+- One use case = one folder under `src/Orders.Api/Features/<UseCase>/`, holding the handler, the endpoint, the
+  response, and — when the command carries a body — the request and its validator. `Features/CreateOrder/` is
+  the reference for a command with a body, `Features/CancelOrder/` for a command whose only input is the route
+  id, `Features/GetOrder/` for a query. Copy the shape, not the logic.
 - A slice is one flat namespace, `Orders.Api.Features.<UseCase>`: keep all of its files in the folder root. A
   sub-folder such as `Validators/` becomes a separate namespace, which the architecture test counts as another slice.
 - Slices never reference other slices, and depend only on `Domain/`, `Platform/` and framework packages. Code
   that two slices need lives in `src/Orders.Api/Domain/` (entities, value objects, policies) or
-  `src/Orders.Api/Platform/` (persistence, endpoint discovery, HTTP concerns). There is no `Common/`, `Shared/`
-  or `Helpers/` folder and no type directly under `Features/`; the architecture test fails on any of them.
+  `src/Orders.Api/Platform/` (persistence, endpoint discovery, HTTP concerns). Do not create a `Common/`,
+  `Shared/` or `Helpers/` folder or a type directly under `Features/`: the architecture test fails as soon as a
+  slice uses one.
 - Handlers are discovered by name (`*Handler` under `Features`) and endpoints by `IEndpoint`; nothing is
   registered in `Program.cs` per slice. An endpoint class needs a public parameterless constructor — take
   dependencies as parameters of the route delegate, not of the class.
-- A command endpoint adds `.AddEndpointFilter<ValidationFilter<TRequest>>()`, which requires a public
-  `<Request>Validator` (`AbstractValidator<TRequest>`) in the slice; the filter throws if none is registered.
+- An endpoint that binds a request body adds `.AddEndpointFilter<ValidationFilter<TRequest>>()`, which requires
+  a public `<Request>Validator` (`AbstractValidator<TRequest>`) in the slice; the filter throws if none is registered.
 - Every slice ships with a test class in `tests/Orders.SliceTests/<UseCase>Tests.cs` that sends the request
-  through the endpoint and asserts the response and the persisted state. Use `ApiFixture`; do not mock the
-  database.
+  through the endpoint and asserts the response and the persisted state. Use `ApiFixture` and
+  `await response.ShouldBe(HttpStatusCode.X)`; do not mock the database.
 - Domain rule violations surface as HTTP 409 (`DomainException` or an explicit conflict result); validation
   failures as 400.
 
@@ -1633,7 +1637,9 @@ git commit -m "vsa-agent-guardrails(sliced): architecture tests with negative co
 - Keep a change inside one slice plus its test. If the task needs edits under `Domain/` or `Platform/`, say so
   in your final message and keep those edits minimal.
 - Do not edit files under `Platform/Persistence/Migrations/`; generate a new migration with `dotnet ef` instead.
-- Before finishing, run the architecture tests and the slice tests; the hooks run them for you as well.
+- Before finishing, run the architecture tests and the slice tests. Hooks also run them after every edit of a
+  `.cs`/`.csproj`/`.props` file (architecture tests) and when you stop (both); a failure blocks with the test
+  output. They append to `.gate.log` in the project root — it is gitignored; leave it alone.
 ```
 
 - [ ] **Step 2: Hook settings and the gate script**
@@ -1647,14 +1653,14 @@ git commit -m "vsa-agent-guardrails(sliced): architecture tests with negative co
       {
         "matcher": "Edit|Write",
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/gate.sh", "timeout": 300 }
+          { "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/gate.sh", "timeout": 120 }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/gate.sh", "timeout": 600 }
+          { "type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/gate.sh", "timeout": 300 }
         ]
       }
     ]
@@ -1667,13 +1673,15 @@ git commit -m "vsa-agent-guardrails(sliced): architecture tests with negative co
 ```sh
 #!/usr/bin/env sh
 # Guardrail gate for Claude Code.
-#   PostToolUse (Edit|Write): architecture tests.
-#   Stop:                     architecture tests, then the behaviour tests.
-# Exit 2 (blocking) with the failure text on stderr. Appends one line per invocation to .gate.log.
-cd "$CLAUDE_PROJECT_DIR" || exit 2
+#   PostToolUse (Edit|Write of a .cs/.csproj/.props file): architecture tests.
+#   Stop, or an event that could not be parsed:            architecture tests, then the behaviour tests.
+# Exit 2 (blocking) with the failure text on stderr. Appends one line per invocation to .gate.log:
+#   <utc time> <event> exit=0 | exit=2 <project> build|test | skipped <reason>
+cd "${CLAUDE_PROJECT_DIR:?CLAUDE_PROJECT_DIR is not set}" || exit 2
 input=$(cat)
 # The hook input is JSON on stdin; tolerate both compact and pretty-printed forms.
 event=$(printf '%s' "$input" | grep -o '"hook_event_name": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+event=${event:-unknown}
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 if printf '%s' "$input" | grep -q '"stop_hook_active": *true'; then
@@ -1681,18 +1689,26 @@ if printf '%s' "$input" | grep -q '"stop_hook_active": *true'; then
   exit 0
 fi
 
-projects="tests/Orders.ArchitectureTests"
-if [ "$event" = "Stop" ]; then
-  projects="$projects tests/Orders.SliceTests"
+if [ "$event" = "PostToolUse" ]; then
+  file=$(printf '%s' "$input" | grep -o '"file_path": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+  case "$file" in
+    *.cs|*.csproj|*.props) ;;
+    *) echo "$(stamp) $event skipped non-code file" >> .gate.log; exit 0 ;;
+  esac
+  projects="tests/Orders.ArchitectureTests"
+else
+  projects="tests/Orders.ArchitectureTests tests/Orders.SliceTests"
 fi
 
 for project in $projects; do
   # -v q silences MSBuild; the console logger at normal verbosity keeps the assertion block (Expected/Actual);
   # the Logging override keeps EF Core's SQL out of the output.
   if ! out=$(Logging__LogLevel__Default=Warning dotnet test "$project" --nologo -v q --logger "console;verbosity=normal" 2>&1); then
-    echo "$(stamp) $event exit=2 $project" >> .gate.log
-    # Drop stack frames, per-test "Passed" lines and any remaining info: lines so the failure messages survive the cut.
-    printf '%s\n' "$out" | grep -v -e '^ *at ' -e '^ *Passed ' -e '^info: ' | tail -80 >&2
+    reason=test
+    if printf '%s' "$out" | grep -q 'error CS'; then reason=build; fi   # a half-written slice, not a rule violation
+    echo "$(stamp) $event exit=2 $project $reason" >> .gate.log
+    # Drop stack frames, per-test "Passed" lines and leftover noise so the failure messages survive the cut.
+    printf '%s\n' "$out" | grep -v -e '^ *at ' -e '^ *Passed ' -e '^info: ' -e '^ *Stack Trace:$' -e '^--- End of stack trace' | tail -80 >&2
     exit 2
   fi
 done
@@ -1701,14 +1717,13 @@ echo "$(stamp) $event exit=0" >> .gate.log
 exit 0
 ```
 
-- [ ] **Step 3: jscpd config**
+- [ ] **Step 3: jscpd config, the variant's .gitignore, and the line-ending attribute**
 
-`sliced/.jscpd.json`:
+`sliced/.jscpd.json` (no `path` key on purpose — the path is always passed positionally, because jscpd 4 resolves a config path to a backslash path on Windows and silently analyses nothing):
 
 ```json
 {
   "format": ["csharp"],
-  "path": ["src"],
   "ignore": ["**/Migrations/**", "**/bin/**", "**/obj/**"],
   "minTokens": 50,
   "minLines": 5,
@@ -1718,6 +1733,27 @@ exit 0
   "gitignore": true
 }
 ```
+
+`sliced/.gitignore` — the runner copies the variant folder alone into a fresh git repository, so the ignore rules must travel with it (the prototype-root `.gitignore` does not):
+
+```
+bin/
+obj/
+*.db
+*.db-shm
+*.db-wal
+.gate.log
+.jscpd-report/
+.trx/
+```
+
+`prototypes/ai-development/vsa-agent-guardrails/.gitattributes` — this machine has `core.autocrlf=true`; without this a fresh clone checks `gate.sh` out with CRLF and every hook invocation fails with `MSB1003`:
+
+```
+*.sh text eol=lf
+```
+
+After adding it run, from the repository root, `git add --renormalize prototypes/ai-development/vsa-agent-guardrails` so the existing `gate.sh` blob is stored with LF.
 
 - [ ] **Step 4: Test the gate script by hand**
 
@@ -2749,20 +2785,23 @@ Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed
 
 ## Commands
 
-- Build: `dotnet build --nologo`
+- Build: `dotnet build --nologo` — warnings are errors (`Directory.Build.props`): a nullable or unused-using
+  warning fails the build.
 - Behaviour tests: `dotnet test tests/Orders.IntegrationTests --nologo` (add `--filter FullyQualifiedName~<UseCase>` for one)
 - Architecture tests: `dotnet test tests/Orders.ArchitectureTests --nologo` — fails on any dependency that points outward
-- Migrations: `dotnet ef migrations add <Name> --project src/Orders.Infrastructure --startup-project src/Orders.Api --output-dir Persistence/Migrations`
+- Migrations: `dotnet tool restore` once, then
+  `dotnet ef migrations add <Name> --project src/Orders.Infrastructure --startup-project src/Orders.Api --output-dir Persistence/Migrations`
 
 ## Layout rules
 
 - `src/Orders.Domain`: entities, enums, policies, exceptions. Depends on nothing else.
 - `src/Orders.Application`: one folder per command or query under `Orders/Commands/<Name>/` or `Orders/Queries/<Name>/`
-  (command/query record, validator for commands, handler class), DTOs in `Orders/OrderDtos.cs`, the `IOrdersDbContext`
-  abstraction in `Common/Interfaces/`. Register every handler in `DependencyInjection.cs`. `Orders/Commands/CreateOrder/`
-  is the reference command: copy its shape, not its logic. Depends on Domain only. A command endpoint adds
-  `.AddEndpointFilter<ValidationFilter<TCommand>>()`, which requires a public `<Command>Validator` in the
-  command's folder; the filter throws if none is registered.
+  (handler class; command record and validator when the command carries a body), DTOs in `Orders/OrderDtos.cs`, the
+  `IOrdersDbContext` abstraction in `Common/Interfaces/`. Register every handler in `DependencyInjection.cs`.
+  `Orders/Commands/CreateOrder/` is the reference for a command with a body, `Orders/Commands/CancelOrder/` for one
+  whose only input is the route id, `Orders/Queries/GetOrder/` for a query: copy the shape, not the logic. Depends on
+  Domain only. An endpoint that binds a request body adds `.AddEndpointFilter<ValidationFilter<TCommand>>()`, which
+  requires a public `<Command>Validator` in the command's folder; the filter throws if none is registered.
 - `src/Orders.Infrastructure`: `OrdersDbContext`, migrations, `DependencyInjection.cs`. Depends on Application and Domain.
 - `src/Orders.Api`: all routes in `Endpoints/OrdersEndpoints.cs`; HTTP concerns in `Common/`. Never reference
   `Orders.Infrastructure.Persistence` from the API; the composition root in `Program.cs` is the only exception.
@@ -2775,18 +2814,20 @@ Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed
 - Keep a change to the layers it needs and its test. If the task needs edits under `Orders.Domain` or
   `Orders.Infrastructure`, say so in your final message and keep those edits minimal.
 - Do not edit files under `Persistence/Migrations/`; generate a new migration with `dotnet ef` instead.
-- Before finishing, run the architecture tests and the integration tests; the hooks run them for you as well.
+- Before finishing, run the architecture tests and the integration tests. Hooks also run them after every edit of a
+  `.cs`/`.csproj`/`.props` file (architecture tests) and when you stop (both); a failure blocks with the test output.
+  They append to `.gate.log` in the solution root — it is gitignored; leave it alone.
 ```
 
 `layered/.claude/settings.json`: identical to `sliced/.claude/settings.json` (Task 9, Step 2).
 
-`layered/.claude/hooks/gate.sh`: identical to the sliced one (Task 9, Step 2) except the behaviour-test project line:
+`layered/.claude/hooks/gate.sh`: identical to the sliced one (Task 9, Step 2) except the `else` branch's project list:
 
 ```sh
-if [ "$event" = "Stop" ]; then
-  projects="$projects tests/Orders.IntegrationTests"
-fi
+  projects="tests/Orders.ArchitectureTests tests/Orders.IntegrationTests"
 ```
+
+`layered/.gitignore`: identical to `sliced/.gitignore` (Task 9, Step 3).
 
 `layered/.jscpd.json`: identical to `sliced/.jscpd.json` (Task 9, Step 3).
 
@@ -3371,10 +3412,12 @@ foreach ($copyName in $copies) {
             $dupAfter = Invoke-Jscpd $dir
             Copy-Item -Path (Join-Path $dir '.jscpd-report/jscpd-report.json') -Destination (Join-Path $artefacts 'jscpd.json') -ErrorAction SilentlyContinue
 
-            $gateBlocks = 0
+            $gateBlocks = 0; $gateBlocksBuild = 0
             $gateLog = Join-Path $dir '.gate.log'
             if (Test-Path $gateLog) {
-                $gateBlocks = @(Get-Content $gateLog | Where-Object { $_ -match 'exit=2' }).Count
+                $blockLines = @(Get-Content $gateLog | Where-Object { $_ -match 'exit=2' })
+                $gateBlocks = $blockLines.Count
+                $gateBlocksBuild = @($blockLines | Where-Object { $_ -match ' build$' }).Count   # compile errors, not rule violations
                 Copy-Item -Path $gateLog -Destination (Join-Path $artefacts 'gate.log')
             }
 
@@ -3393,7 +3436,7 @@ foreach ($copyName in $copies) {
                 ended = $m.ended; is_error = $m.is_error; permission_denials = $m.permission_denials
                 files_read_distinct = $m.files_read_distinct; read_calls = $m.read_calls; grep_calls = $m.grep_calls; glob_calls = $m.glob_calls
                 edit_calls = $m.edit_calls; write_calls = $m.write_calls; bash_calls = $m.bash_calls; bash_search_calls = $m.bash_search_calls
-                gate_blocks = $gateBlocks
+                gate_blocks = $gateBlocks; gate_blocks_build = $gateBlocksBuild
                 files_changed = $changed.Count; lines_added = $added; lines_deleted = $deleted; files_out_of_scope = $outOfScope.Count
                 build_ok = $buildOk
                 behaviour_tests_passed = $behSum.passed; behaviour_tests_failed = $behSum.failed
@@ -3504,6 +3547,8 @@ Three repetitions; one model; one prompt per task; the layered copy is a well-st
 the harness denies `cat`/`head`/`tail`/`sed` so file reads are countable, which changes agent behaviour slightly but equally for both copies.
 Limits of the architecture rules as an instrument: ArchUnitNET treats a sub-namespace inside a slice as a separate slice (the sliced
 `CLAUDE.md` says so), and a slice rule passes vacuously when its pattern matches nothing (guarded by a presence test).
+Gate blocks: `gate_blocks_build` are compile errors on a half-written change, not rule violations; only the remainder are guardrail catches.
+Wall time is not comparable across copies: the layered gate builds four projects per invocation, the sliced gate two.
 
 ## Raw data
 
