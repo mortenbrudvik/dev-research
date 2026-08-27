@@ -30,3 +30,19 @@ namespace Fixture.Platform
         public static string Format(object value) => value.ToString() ?? "";
     }
 }
+
+namespace Fixture.Features
+{
+    public static class SharedHelper   // a type directly under Features, outside any slice — the shared-code shortcut
+    {
+        public static string Format(string value) => value.ToUpperInvariant();
+    }
+}
+
+namespace Fixture.Features.D
+{
+    public sealed class DUser
+    {
+        public string Handle() => Fixture.Features.SharedHelper.Format("d");   // slice D uses the shortcut
+    }
+}
