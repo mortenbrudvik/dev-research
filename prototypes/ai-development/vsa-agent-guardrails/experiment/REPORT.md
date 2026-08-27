@@ -57,6 +57,9 @@ slice while the layered scope sanctions sharing `OrderDtos.cs`. T3's scope globs
 (`*Customer*`) accept any slice or query name containing "Customer"; an agent that instead adds a second route to the existing
 `ListOrders` use case takes an out-of-scope hit in either copy — a naming judgement, not sprawl, so discount it when reading `files_out_of_scope`.
 Wall time is not comparable across copies: the layered gate builds four projects per invocation, the sliced gate two.
+T3's layered scope admits any new file under `Endpoints/` while the sliced scope is name-gated (`*Customer*`); an agent that names its
+endpoint file oddly is charged only in the sliced copy. Prompt-cache warmth is uncontrolled in `cache_create_tokens`: repetitions of the
+same copy × task are spread out by the task → repetition → copy run order, but not guaranteed to fall outside the cache TTL.
 Token columns describe the primary model only (`result.usage`); `cost_usd` also includes the helper models the CLI bills alongside it
 (`models_billed`). `--setting-sources project` does not gate MCP servers configured at user level: on this machine they were present but
 unauthenticated and contributed no tools; where they are authenticated, their tools and tokens would enter every run of both copies.

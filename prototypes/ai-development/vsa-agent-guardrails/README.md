@@ -33,8 +33,8 @@ Requires PowerShell 7, Node 22 (`npx jscpd@4`), Git, Git Bash (the hooks are `sh
     pwsh experiment/Test-ParseEvents.ps1                                  # the metrics library's tests, free
     pwsh experiment/Test-Parity.ps1                                       # both copies answer identically, free
     pwsh experiment/run.ps1 -Task T1 -Repetitions 1 -Yes -ClaudeCommand experiment/stub/claude.cmd   # the harness itself, free
-    pwsh experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1          # smoke run, one paid agent run (~$2–8)
-    pwsh experiment/run.ps1 -Yes                                          # both copies, five tasks, 3 repetitions (~$60–150)
+    pwsh experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1          # smoke run, one paid agent run (~$1)
+    pwsh experiment/run.ps1 -Yes                                          # both copies, five tasks, 3 repetitions (~$20–40)
 
 Options: `-Copy sliced|layered|both`, `-Task T1[,T3]` (an unknown id fails before anything is copied or spent), `-Repetitions n`,
 `-MaxBudgetUsd` (default 8; the per-run cap handed to `claude` itself), `-MaxTotalUsd` (default 200; stops the experiment as soon

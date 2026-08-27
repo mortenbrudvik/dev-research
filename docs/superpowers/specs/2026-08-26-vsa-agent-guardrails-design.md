@@ -55,9 +55,9 @@ prototypes/ai-development/vsa-agent-guardrails/
 │   │   ├── Program.cs              builder, DbContext (SQLite), FluentValidation, endpoint discovery; `public partial class Program { }`
 │   │   ├── Features/
 │   │   │   ├── CreateOrder/        CreateOrderRequest, CreateOrderResponse, CreateOrderValidator, CreateOrderHandler, CreateOrderEndpoint
-│   │   │   ├── CancelOrder/        CancelOrderRequest, CancelOrderResponse, CancelOrderHandler, CancelOrderEndpoint
-│   │   │   ├── GetOrder/           GetOrderRequest, GetOrderResponse, GetOrderHandler, GetOrderEndpoint
-│   │   │   └── ListOrders/         ListOrdersRequest, ListOrdersResponse, ListOrdersHandler, ListOrdersEndpoint
+│   │   │   ├── CancelOrder/        CancelOrderResponse, CancelOrderHandler, CancelOrderEndpoint
+│   │   │   ├── GetOrder/           GetOrderResponse, GetOrderHandler, GetOrderEndpoint
+│   │   │   └── ListOrders/         ListOrdersResponse, ListOrdersHandler, ListOrdersEndpoint
 │   │   ├── Domain/                 Order, OrderLine, OrderStatus, CancellationPolicy
 │   │   └── Platform/
 │   │       ├── Persistence/        OrdersDbContext, entity configurations, Migrations/
@@ -117,7 +117,7 @@ Validation failures return `400` ProblemDetails; domain-rule failures `409` Prob
 
 ### 4.2 Sliced copy
 
-One folder per use case under `Features/`, five files each, no MediatR: the endpoint class implements `IEndpoint.Map` and calls the handler; the handler takes `OrdersDbContext` directly. `Domain/` holds entities and the policy; `Platform/` holds persistence, endpoint discovery, and the validation filter. No `Common/`, `Shared/` or `Helpers/`. The `CLAUDE.md` names `Features/CreateOrder/` as the reference slice.
+One folder per use case under `Features/`, three to five files each (a request record and its validator only when the command carries a body), no MediatR: the endpoint class implements `IEndpoint.Map` and calls the handler; the handler takes `OrdersDbContext` directly. `Domain/` holds entities and the policy; `Platform/` holds persistence, endpoint discovery, and the validation filter. No `Common/`, `Shared/` or `Helpers/`. The `CLAUDE.md` names `Features/CreateOrder/` as the reference slice.
 
 ### 4.3 Layered copy
 
@@ -163,7 +163,7 @@ Parameters: `-Copy sliced|layered|both` (default both), `-Task T1..T5|all` (defa
 Per run (copy × task × repetition):
 
 1. **Fresh copy.** Copy the variant folder (excluding `bin/`, `obj/`, `.jscpd-report/`, `.trx/`, `.claude/worktrees/`, `*.db*` and `.gate.log`) to a temporary directory outside the repository (`$env:TEMP\vsa-runs\<copy>-<task>-<n>\`); `git init`, commit everything as the baseline. The copy's `CLAUDE.md` and `.claude/` come with it; the repository root's `CLAUDE.md` does not.
-2. **Baseline build and test** once per copy per experiment (not per run) to confirm the starting state is green; abort the experiment if it is not.
+2. **Baseline build and test** once per copy per experiment (not per run) to confirm the starting state is green; abort the experiment if it is not. Runs are then ordered task → repetition → copy, so the two arms interleave and anything that drifts over the experiment's hours (model routing, service load, cache warmth) lands on both; the runner also stops if the primary model changes between rows unless `-Model` pins it.
 3. **Agent run.** In that directory, exactly:
 
     ```
@@ -184,7 +184,8 @@ The runner never edits the copies in the repository; a failed or interrupted run
 
 | Column | Source |
 |---|---|
-| `copy, task, rep, model, started_at` | runner |
+| `copy, task, rep, model, started_at` | runner; `model` is the primary model named by the CLI's init event (or `-Model`) |
+| `models_billed, wall_ms, skipped_lines` | every model id the result event billed (sorted, `+`-joined); wall clock around the CLI call; transcript lines that failed to parse |
 | `cost_usd, num_turns, duration_ms, duration_api_ms, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens` | the final `result` event of `stream-json`: `total_cost_usd`, `num_turns`, `duration_ms`, `duration_api_ms`, `usage.input_tokens`, `usage.output_tokens`, `usage.cache_read_input_tokens`, `usage.cache_creation_input_tokens` (observed on 2.1.246; `modelUsage` is kept in the per-run JSON) |
 | `ended, terminal_reason, is_error, permission_denials` | result event `subtype` (e.g. `success`), `terminal_reason` and `stop_reason` recorded verbatim, `is_error`, and the length of its `permission_denials` array — a budget stop shows up here and in `notes` |
 | `files_read_distinct, read_calls, grep_calls, glob_calls, edit_calls, write_calls, bash_calls, bash_search_calls` | `assistant` events, `message.content[]` blocks with `type == "tool_use"`, by `name`; `Read` → `input.file_path` deduplicated; `Bash` → `input.command`, counted as a search call when it starts with `ls`, `dir`, `find`, `grep`, `rg` or `git grep` |

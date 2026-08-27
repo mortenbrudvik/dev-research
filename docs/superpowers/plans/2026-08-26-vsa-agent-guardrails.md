@@ -4253,6 +4253,9 @@ slice while the layered scope sanctions sharing `OrderDtos.cs`. T3's scope globs
 (`*Customer*`) accept any slice or query name containing "Customer"; an agent that instead adds a second route to the existing
 `ListOrders` use case takes an out-of-scope hit in either copy — a naming judgement, not sprawl, so discount it when reading `files_out_of_scope`.
 Wall time is not comparable across copies: the layered gate builds four projects per invocation, the sliced gate two.
+T3's layered scope admits any new file under `Endpoints/` while the sliced scope is name-gated (`*Customer*`); an agent that names its
+endpoint file oddly is charged only in the sliced copy. Prompt-cache warmth is uncontrolled in `cache_create_tokens`: repetitions of the
+same copy × task are spread out by the task → repetition → copy run order, but not guaranteed to fall outside the cache TTL.
 Token columns describe the primary model only (`result.usage`); `cost_usd` also includes the helper models the CLI bills alongside it
 (`models_billed`). `--setting-sources project` does not gate MCP servers configured at user level: on this machine they were present but
 unauthenticated and contributed no tools; where they are authenticated, their tools and tokens would enter every run of both copies.
@@ -4482,8 +4485,8 @@ Requires PowerShell 7, Node 22 (`npx jscpd@4`), Git, Git Bash (the hooks are `sh
     pwsh experiment/Test-ParseEvents.ps1                                  # the metrics library's tests, free
     pwsh experiment/Test-Parity.ps1                                       # both copies answer identically, free
     pwsh experiment/run.ps1 -Task T1 -Repetitions 1 -Yes -ClaudeCommand experiment/stub/claude.cmd   # the harness itself, free
-    pwsh experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1          # smoke run, one paid agent run (~$2–8)
-    pwsh experiment/run.ps1 -Yes                                          # both copies, five tasks, 3 repetitions (~$60–150)
+    pwsh experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1          # smoke run, one paid agent run (~$1)
+    pwsh experiment/run.ps1 -Yes                                          # both copies, five tasks, 3 repetitions (~$20–40)
 
 Options: `-Copy sliced|layered|both`, `-Task T1[,T3]` (an unknown id fails before anything is copied or spent), `-Repetitions n`,
 `-MaxBudgetUsd` (default 8; the per-run cap handed to `claude` itself), `-MaxTotalUsd` (default 200; stops the experiment as soon
