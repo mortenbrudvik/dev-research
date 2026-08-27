@@ -1,0 +1,11 @@
+# SQLite files produced by running the apps or the tests
+*.db
+*.db-shm
+*.db-wal
+# written by the Claude Code hook
+.gate.log
+# jscpd output
+.jscpd-report/
+# experiment runs (keep only the committed example)
+experiment/results/*
+!experiment/results/example-results.csv
