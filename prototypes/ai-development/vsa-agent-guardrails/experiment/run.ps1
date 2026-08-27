@@ -154,7 +154,7 @@ function Invoke-Agent([string]$dir, [string]$promptFile, [string]$eventsFile, [s
         '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
         '--setting-sources', 'project', '--permission-mode', 'dontAsk',
         '--allowedTools', 'Read,Glob,Grep,Edit,Write,Bash(dotnet *),Bash(git *)',
-        '--disallowedTools', 'Bash(cat *),Bash(head *),Bash(tail *),Bash(sed *),Bash(type *)',
+        '--disallowedTools', 'Bash(cat *),Bash(head *),Bash(tail *),Bash(sed *),Bash(type *),Bash(git show *),Bash(git cat-file *)',
         '--max-budget-usd', "$MaxBudgetUsd"
     )
     if ($Model) { $cliArgs += @('--model', $Model) }
@@ -170,6 +170,9 @@ function Invoke-Agent([string]$dir, [string]$promptFile, [string]$eventsFile, [s
 }
 
 $runningTotal = 0.0
+$firstModel = $null
+$dupBefore = @{}
+$dupBeforeJson = @{}
 try {
     foreach ($copyName in $copies) {
         Write-Host "== baseline check: $copyName"
@@ -180,15 +183,20 @@ try {
         if (-not ($archBase.ok -and $behBase.ok)) {
             throw "Baseline tests fail for $copyName; aborting.`n$($archBase.output)`n$($behBase.output)"
         }
-        $dupBefore = Invoke-Jscpd $base
+        $dupBefore[$copyName] = Invoke-Jscpd $base
         # Kept in memory because the baseline copy is about to go: every run folder gets its own copy, so
         # dup_blocks_before can be re-derived from a results folder alone.
-        $dupBeforeJson = Get-Content -LiteralPath (Join-Path $base '.jscpd-report/jscpd-report.json') -Raw -ErrorAction SilentlyContinue
+        $dupBeforeJson[$copyName] = Get-Content -LiteralPath (Join-Path $base '.jscpd-report/jscpd-report.json') -Raw -ErrorAction SilentlyContinue
         if (-not $KeepRuns) { Remove-Item -Recurse -Force $base }
+    }
 
-        foreach ($taskFile in $taskFiles) {
-            $spec = Get-TaskSpec -Path $taskFile.FullName
-            for ($rep = 1; $rep -le $Repetitions; $rep++) {
+    # Task, then repetition, then copy: the two arms are interleaved so that anything that drifts over the
+    # hours an experiment takes - a model update, machine load, a warm cache - lands on both copies alike
+    # instead of on whichever one happened to run second.
+    foreach ($taskFile in $taskFiles) {
+        $spec = Get-TaskSpec -Path $taskFile.FullName
+        for ($rep = 1; $rep -le $Repetitions; $rep++) {
+            foreach ($copyName in $copies) {
                 $runName = "$copyName-$($spec.id)-$rep"
                 # Before the run, not only after it: the cap is a spending limit, so the run that would break it is the
                 # one that must not start.
@@ -199,6 +207,7 @@ try {
                 $startedAt = (Get-Date).ToUniversalTime()
                 $dir = $null
                 $keepThisRun = $false
+                $rowModel = $null       # set only by a measured row, so a failed run cannot look like drift
                 try {
                     $run = New-RunDirectory $copyName $runName
                     $dir = $run.dir
@@ -229,7 +238,7 @@ try {
                     # can be re-derived from the results folder after the run directory is gone.
                     New-Item -ItemType Directory -Force -Path (Join-Path $artefacts 'trx') | Out-Null
                     Copy-Item -Path (Join-Path $dir '.trx/*.trx') -Destination (Join-Path $artefacts 'trx') -ErrorAction SilentlyContinue
-                    if ($dupBeforeJson) { Set-Content -Path (Join-Path $artefacts 'jscpd-before.json') -Value $dupBeforeJson -Encoding utf8 }
+                    if ($dupBeforeJson[$copyName]) { Set-Content -Path (Join-Path $artefacts 'jscpd-before.json') -Value $dupBeforeJson[$copyName] -Encoding utf8 }
 
                     Push-Location $dir
                     try {
@@ -273,8 +282,9 @@ try {
                     if ($agentCommits -gt 0) { $notes += "agent committed ($agentCommits commit$(if ($agentCommits -ne 1) { 's' }))" }
                     if (-not $archSum.found) { $notes += 'no arch trx (build failed?)' }
                     if (-not $behSum.found) { $notes += 'no behaviour trx (build failed?)' }
-                    if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
+                    if ($dupBefore[$copyName].sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
 
+                    $rowModel = $m.model
                     $row = New-ResultRow @{
                         # What ran, not what was asked for: the init event names the model the CLI chose, and
                         # modelUsage names everything it billed. -Model is only the fallback, 'default' the last one.
@@ -293,7 +303,7 @@ try {
                         build_ok = $buildOk
                         behaviour_tests_passed = $behSum.passed; behaviour_tests_failed = $behSum.failed
                         arch_tests_passed = $archSum.passed; arch_tests_failed = $archSum.failed
-                        dup_blocks_before = $dupBefore.clones; dup_blocks_after = $dupAfter.clones; dup_lines_pct_after = $dupAfter.percentage
+                        dup_blocks_before = $dupBefore[$copyName].clones; dup_blocks_after = $dupAfter.clones; dup_lines_pct_after = $dupAfter.percentage
                         notes = ($notes -join '; ')
                     }
                     $row | Export-Csv -Path $csv -Append -NoTypeInformation
@@ -318,6 +328,14 @@ try {
                 }
                 # Outside the catch: a runaway total stops the experiment instead of becoming one more row.
                 if ($runningTotal -gt $MaxTotalUsd) { throw "Total cost `$$runningTotal exceeds -MaxTotalUsd `$$MaxTotalUsd; stopping" }
+                # Comparing two arms only means something while the model stays the same. The row is already
+                # written; what follows it would be a different experiment, so stop instead of mixing them.
+                if ($rowModel) {
+                    if ($null -eq $firstModel) { $firstModel = $rowModel }
+                    elseif ($rowModel -ne $firstModel -and -not $Model) {
+                        throw "primary model changed from $firstModel to $rowModel; stopping - pass -Model to pin it"
+                    }
+                }
             }
         }
     }

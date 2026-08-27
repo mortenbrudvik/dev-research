@@ -2,9 +2,10 @@
 # Stand-in for `claude -p --output-format stream-json --verbose`, used to exercise run.ps1 end to end for
 # free. Like the real CLI it runs in the run directory, reads the prompt from stdin, changes the working
 # tree and prints a transcript on stdout. Works in either copy: the behaviour test project decides the
-# in-scope file. Two environment toggles let the runner's own verification steps reach its failure paths:
+# in-scope file. Three environment toggles let the runner's own verification steps reach its failure paths:
 #   VSA_STUB_COMMIT=1  commit the change, so the runner must measure against the baseline commit, not HEAD
 #   VSA_STUB_FAIL=1    print nothing at all and exit 3, so the runner must survive a missing transcript
+#   VSA_STUB_MODEL=a,b the init event's model, picked by repetition, so the model-drift stop can be tried
 $ErrorActionPreference = 'Stop'
 $prompt = [Console]::In.ReadToEnd()
 [Console]::Error.WriteLine("stub: $($prompt.Length) prompt characters, cwd $($PWD.Path)")
@@ -25,6 +26,16 @@ if ($env:VSA_STUB_COMMIT -eq '1') {
     & git -c user.name=stub -c user.email=stub@example.invalid commit -q -m 'stub commit' 2>&1 | Out-Null
 }
 
+# The model the init event announces. A comma-separated VSA_STUB_MODEL picks by repetition - the run
+# directory is <copy>-<task>-<rep> - so two repetitions can report two different models.
+$initModel = 'stub-model'
+if ($env:VSA_STUB_MODEL) {
+    $choices = @($env:VSA_STUB_MODEL -split ',')
+    $rep = 1
+    if ((Split-Path -Leaf $PWD.Path) -match '-(\d+)$') { $rep = [int]$Matches[1] }
+    $initModel = $choices[[Math]::Min($rep, $choices.Count) - 1]
+}
+
 $toolUse = @(
     '{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"src/Orders.Api/Program.cs"}}'
     '{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"CLAUDE.md"}}'
@@ -37,7 +48,7 @@ $toolUse = @(
     '{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"ls src"}}'
 ) -join ','
 $transcript = @(
-    '{"type":"system","subtype":"init","cwd":".","model":"stub-model"}'
+    '{"type":"system","subtype":"init","cwd":".","model":"' + $initModel + '"}'
     '{"type":"assistant","message":{"content":[' + $toolUse + ']}}'
     'a line that is not JSON, so that skipped_lines is exercised too'
     '{"type":"result","subtype":"success","total_cost_usd":0.1234,"num_turns":7,"duration_ms":12345,' +
