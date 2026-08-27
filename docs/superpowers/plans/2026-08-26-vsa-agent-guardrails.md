@@ -41,6 +41,7 @@
 | `experiment/tasks/T1..T5-*.md` | task prompts with scope front matter |
 | `experiment/Parse-Events.ps1`, `experiment/Test-ParseEvents.ps1`, `experiment/fixtures/sample-events.jsonl` | stream-json → metrics, and its test |
 | `experiment/run.ps1` | the runner (spec §5.2) |
+| `experiment/stub/claude.cmd`, `experiment/stub/claude-stub.ps1` | stand-in for the Claude CLI, so the runner can be exercised for nothing |
 | `experiment/Test-Parity.ps1` | HTTP-level parity check of the two copies (spec §6) |
 | `experiment/results/example-results.csv`, `experiment/REPORT.md` | column reference; report template |
 
@@ -3604,7 +3605,7 @@ git commit -m "vsa-agent-guardrails(experiment): metrics library with tests"
 ### Task 17: The runner (`run.ps1`)
 
 **Files:**
-- Create: `P/experiment/run.ps1`
+- Create: `P/experiment/run.ps1`, `P/experiment/stub/claude.cmd`, `P/experiment/stub/claude-stub.ps1`
 
 - [ ] **Step 1: Write the runner**
 
@@ -3617,10 +3618,13 @@ git commit -m "vsa-agent-guardrails(experiment): metrics library with tests"
   Runs Claude Code headlessly against the sliced and layered copies on the experiment tasks and records metrics.
 .DESCRIPTION
   Per copy x task x repetition: copies the variant to %TEMP%\vsa-runs\<name>, makes it a git repo with one baseline commit,
-  runs `claude -p` with the prompt on stdin (spec 5.2), then builds, tests, diffs, runs jscpd, and appends one CSV row.
+  runs `claude -p` with the prompt on stdin (spec 5.2), then builds, tests, diffs against that baseline commit, runs jscpd,
+  and appends one CSV row. Every repetition writes exactly one row: an unexpected failure becomes a row whose notes start
+  with "harness error", and the experiment carries on.
 .EXAMPLE
-  pwsh experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1        # smoke run
-  pwsh experiment/run.ps1                                              # full experiment: both copies, all tasks, 3 reps
+  pwsh experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1        # smoke run, one paid agent run
+  pwsh experiment/run.ps1 -Yes                                        # full experiment: both copies, all tasks, 3 reps
+  pwsh experiment/run.ps1 -Task T1 -Repetitions 1 -Yes -ClaudeCommand experiment/stub/claude.cmd   # harness test, free
 #>
 [CmdletBinding()]
 param(
@@ -3628,23 +3632,44 @@ param(
     [string[]]$Task = @('all'),
     [int]$Repetitions = 3,
     [double]$MaxBudgetUsd = 8,
+    [double]$MaxTotalUsd = 200,
     [string]$Model,
+    [string]$ClaudeCommand = 'claude',
     [string]$ResultsDir,
-    [switch]$KeepRuns
+    [switch]$KeepRuns,
+    [switch]$Yes
 )
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[cultureinfo]::CurrentCulture = [cultureinfo]::InvariantCulture   # "-MaxBudgetUsd 2,5" and CSV decimals must not follow a comma culture
 
 . "$PSScriptRoot/Parse-Events.ps1"
 
 $root = Split-Path -Path $PSScriptRoot -Parent
-$claude = (Get-Command -Name claude -ErrorAction Stop).Source
+$claudeCmd = Get-Command -Name $ClaudeCommand -ErrorAction SilentlyContinue
+if (-not $claudeCmd) { throw "-ClaudeCommand '$ClaudeCommand' is neither on PATH nor a path to a command" }
+$claude = (Resolve-Path -LiteralPath $claudeCmd.Source).Path      # absolute: the CLI is invoked after Push-Location
 $copies = if ($Copy -eq 'both') { @('sliced', 'layered') } else { @($Copy) }
 $taskFiles = @(Get-ChildItem -Path "$PSScriptRoot/tasks" -Filter 'T*.md' | Sort-Object Name)
-if ($Task -notcontains 'all') { $taskFiles = @($taskFiles | Where-Object { $Task -contains ($_.BaseName -split '-')[0] }) }
+$knownIds = @($taskFiles | ForEach-Object { ($_.BaseName -split '-')[0] })
+$Task = @($Task -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })   # `pwsh run.ps1 -Task T1,T2` arrives as one string
+if ($Task -notcontains 'all') {
+    # A typo must not silently shrink the experiment: -Task T1,T9 fails here, before anything is copied or spent.
+    $unknown = @($Task | Where-Object { $knownIds -notcontains $_ })
+    if ($unknown.Count -gt 0) { throw "Unknown task id(s): $($unknown -join ', '). Known ids: $($knownIds -join ', '), or 'all'." }
+    $taskFiles = @($taskFiles | Where-Object { $Task -contains ($_.BaseName -split '-')[0] })
+}
 if ($taskFiles.Count -eq 0) { throw "No task files match -Task $($Task -join ',')" }
+
+$plannedRuns = $copies.Count * $taskFiles.Count * $Repetitions
+if ($plannedRuns -gt 1 -and -not $Yes) {
+    Write-Host ("About to make {0} agent runs: worst case `${1:N2} at -MaxBudgetUsd `${2:N2} each." -f
+        $plannedRuns, ($plannedRuns * $MaxBudgetUsd), $MaxBudgetUsd)
+    if ((Read-Host 'Proceed? Type y to continue') -ne 'y') { throw 'Cancelled; nothing was run. Pass -Yes for unattended runs.' }
+}
+
 if (-not $ResultsDir) { $ResultsDir = Join-Path $PSScriptRoot "results/$(Get-Date -Format 'yyyyMMdd-HHmmss')" }
 New-Item -ItemType Directory -Force -Path $ResultsDir | Out-Null
 $ResultsDir = (Resolve-Path -LiteralPath $ResultsDir).Path        # a relative -ResultsDir must survive Push-Location
@@ -3654,23 +3679,53 @@ $behaviourProject = @{ sliced = 'tests/Orders.SliceTests'; layered = 'tests/Orde
 $archProject = 'tests/Orders.ArchitectureTests'
 $git = @('-c', 'user.name=runner', '-c', 'user.email=runner@example.invalid')
 
+function New-ResultRow([hashtable]$values) {
+    # One fixed column set for every row. Export-Csv -Append rejects an object whose properties differ from the
+    # header, so a harness-error row must carry the same columns, in the same order, with the rest left empty.
+    $row = [ordered]@{}
+    foreach ($name in @(
+            'copy', 'task', 'rep', 'model', 'started_at', 'wall_ms',
+            'cost_usd', 'num_turns', 'duration_ms', 'duration_api_ms',
+            'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_create_tokens',
+            'ended', 'terminal_reason', 'stop_reason', 'is_error', 'permission_denials', 'skipped_lines',
+            'files_read_distinct', 'read_calls', 'grep_calls', 'glob_calls',
+            'edit_calls', 'write_calls', 'bash_calls', 'bash_search_calls',
+            'gate_blocks', 'gate_blocks_build',
+            'files_changed', 'lines_added', 'lines_deleted', 'files_out_of_scope', 'build_ok',
+            'behaviour_tests_passed', 'behaviour_tests_failed', 'arch_tests_passed', 'arch_tests_failed',
+            'dup_blocks_before', 'dup_blocks_after', 'dup_lines_pct_after', 'notes')) {
+        $row[$name] = if ($values.ContainsKey($name)) { $values[$name] } else { '' }
+    }
+    return [pscustomobject]$row
+}
+
+function Format-Metric($value, [string]$format = '{0}') {
+    # A missing number is not a zero: an interrupted run must not print "cost $0.00" or "behaviour 0/0".
+    if ($null -eq $value) { return 'n/a' }
+    return ($format -f $value)
+}
+
 function New-RunDirectory([string]$copyName, [string]$runName) {
     $src = Join-Path $root $copyName
     $dst = Join-Path $runsRoot $runName
     if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
-    & robocopy $src $dst /E /XD bin obj .jscpd-report .trx /XF *.db *.db-shm *.db-wal .gate.log /NFL /NDL /NJH /NJS /NP | Out-Null
+    & robocopy $src $dst /E /XD bin obj worktrees .jscpd-report .trx /XF *.db *.db-shm *.db-wal .gate.log /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy $src -> $dst failed with exit code $LASTEXITCODE" }
     Push-Location $dst
     try {
         & dotnet tool restore 2>&1 | Out-Null          # makes `dotnet ef` available in the fresh copy (local tool manifest)
+        & dotnet ef --version 2>&1 | Out-Null          # `tool restore` exits 0 with no manifest, so probe the capability itself
+        if ($LASTEXITCODE -ne 0) { throw "dotnet ef is unavailable in $dst - dotnet tool restore did not succeed" }
         & git init -q
-        & git @git add -A
+        & git @git add -A 2>&1 | Out-Null              # discards the autocrlf "LF will be replaced by CRLF" warnings
+        if ($LASTEXITCODE -ne 0) { throw "git add -A failed in $dst" }
         & git @git commit -q -m 'baseline'
         if ($LASTEXITCODE -ne 0) { throw "baseline commit failed in $dst" }
+        $baseSha = (& git rev-parse HEAD).Trim()
     }
     finally { Pop-Location }
-    return $dst
+    return [pscustomobject]@{ dir = $dst; baseSha = $baseSha }
 }
 
 function Invoke-DotnetTest([string]$dir, [string]$project, [string]$trxName) {
@@ -3715,7 +3770,8 @@ function Invoke-Agent([string]$dir, [string]$promptFile, [string]$eventsFile, [s
 $runningTotal = 0.0
 foreach ($copyName in $copies) {
     Write-Host "== baseline check: $copyName"
-    $base = New-RunDirectory $copyName "$copyName-baseline"
+    $baseRun = New-RunDirectory $copyName "$copyName-baseline"
+    $base = $baseRun.dir
     $archBase = Invoke-DotnetTest $base $archProject 'arch.trx'
     $behBase = Invoke-DotnetTest $base $behaviourProject[$copyName] 'behaviour.trx'
     if (-not ($archBase.ok -and $behBase.ok)) {
@@ -3729,118 +3785,272 @@ foreach ($copyName in $copies) {
         for ($rep = 1; $rep -le $Repetitions; $rep++) {
             $runName = "$copyName-$($spec.id)-$rep"
             Write-Host "== run $runName ($($spec.title))"
-            $startedAt = Get-Date
-            $dir = New-RunDirectory $copyName $runName
-            $artefacts = Join-Path $ResultsDir $runName
-            New-Item -ItemType Directory -Force -Path $artefacts | Out-Null
-            $promptFile = Join-Path $artefacts 'prompt.md'
-            Set-Content -Path $promptFile -Value $spec.prompt -Encoding utf8
-            $events = Join-Path $artefacts 'events.jsonl'
-
-            $agent = Invoke-Agent $dir $promptFile $events (Join-Path $artefacts 'stderr.txt')
-            $m = ConvertFrom-AgentEvents -Path $events
-
-            Push-Location $dir
+            $startedAt = (Get-Date).ToUniversalTime()
+            $dir = $null
             try {
-                & dotnet build --nologo -v q 2>&1 | Set-Content -Path (Join-Path $artefacts 'build.txt')
-                $buildOk = ($LASTEXITCODE -eq 0)
+                $run = New-RunDirectory $copyName $runName
+                $dir = $run.dir
+                $baseSha = $run.baseSha
+                $artefacts = Join-Path $ResultsDir $runName
+                New-Item -ItemType Directory -Force -Path $artefacts | Out-Null
+                $promptFile = Join-Path $artefacts 'prompt.md'
+                Set-Content -Path $promptFile -Value $spec.prompt -Encoding utf8
+                $events = Join-Path $artefacts 'events.jsonl'
+
+                $agent = Invoke-Agent $dir $promptFile $events (Join-Path $artefacts 'stderr.txt')
+                # A CLI that writes nothing at all to stdout leaves Set-Content with no input, and no file to parse.
+                if (-not (Test-Path -LiteralPath $events)) { Set-Content -Path $events -Value '' -Encoding utf8 }
+                $m = ConvertFrom-AgentEvents -Path $events
+
+                Push-Location $dir
+                try {
+                    & dotnet build --nologo -v q 2>&1 | Set-Content -Path (Join-Path $artefacts 'build.txt')
+                    $buildOk = ($LASTEXITCODE -eq 0)
+                }
+                finally { Pop-Location }
+                $arch = Invoke-DotnetTest $dir $archProject 'arch.trx'
+                $beh = Invoke-DotnetTest $dir $behaviourProject[$copyName] 'behaviour.trx'
+                Set-Content -Path (Join-Path $artefacts 'test-output.txt') -Value ($arch.output + "`n`n" + $beh.output)
+                $archSum = Read-TrxSummary -Path $arch.trx
+                $behSum = Read-TrxSummary -Path $beh.trx
+
+                Push-Location $dir
+                try {
+                    & git @git add -A 2>&1 | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw "git add -A failed in $dir" }
+                    # Always against the baseline commit, never HEAD: an agent that commits its own work would
+                    # otherwise measure as having changed nothing. --no-renames: a moved file counts as two files.
+                    $changed = @(& git -c core.quotepath=false diff --cached --no-renames --name-only $baseSha)   # keep non-ASCII paths readable
+                    $numstat = @(& git diff --cached --no-renames --numstat $baseSha)
+                    & git -c core.quotepath=false diff --cached --no-renames $baseSha | Set-Content -Path (Join-Path $artefacts 'diff.patch') -Encoding utf8
+                    $head = (& git rev-parse HEAD).Trim()
+                    $agentCommits = if ($head -eq $baseSha) { 0 } else { [int](& git rev-list --count "$baseSha..HEAD").Trim() }
+                }
+                finally { Pop-Location }
+                $added = 0; $deleted = 0
+                foreach ($n in $numstat) {
+                    $parts = $n -split "`t"
+                    if ($parts[0] -match '^\d+$') { $added += [int]$parts[0]; $deleted += [int]$parts[1] }
+                }
+                $outOfScope = @($changed | Where-Object { -not (Test-PathInScope -Path $_ -Globs $spec.scope[$copyName]) })
+                Set-Content -Path (Join-Path $artefacts 'out-of-scope.txt') -Value ($outOfScope -join "`n")
+
+                $dupAfter = Invoke-Jscpd $dir
+                Copy-Item -Path (Join-Path $dir '.jscpd-report/jscpd-report.json') -Destination (Join-Path $artefacts 'jscpd.json') -ErrorAction SilentlyContinue
+
+                $gateBlocks = 0; $gateBlocksBuild = 0
+                $gateLog = Join-Path $dir '.gate.log'
+                if (Test-Path $gateLog) {
+                    $blockLines = @(Get-Content $gateLog | Where-Object { $_ -match 'exit=2' })
+                    $gateBlocks = $blockLines.Count
+                    $gateBlocksBuild = @($blockLines | Where-Object { $_ -match ' build$' }).Count   # compile errors, not rule violations
+                    Copy-Item -Path $gateLog -Destination (Join-Path $artefacts 'gate.log')
+                }
+
+                $notes = @()
+                if ($agent.exit -ne 0) { $notes += "claude exit $($agent.exit)" }
+                if (-not $m.saw_result) { $notes += 'no result event' }        # transcript stops mid-stream: cost and tokens are unknown, not zero
+                elseif ($m.ended -ne 'success') { $notes += "ended=$($m.ended)" }
+                if ($m.skipped_lines -gt 0) { $notes += "$($m.skipped_lines) unparsable event line$(if ($m.skipped_lines -ne 1) { 's' })" }
+                if ($m.permission_denials -gt 0) { $notes += "$($m.permission_denials) permission denials" }
+                if ($agentCommits -gt 0) { $notes += "agent committed ($agentCommits commits)" }
+                if (-not $archSum.found) { $notes += 'no arch trx (build failed?)' }
+                if (-not $behSum.found) { $notes += 'no behaviour trx (build failed?)' }
+                if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
+
+                $row = New-ResultRow @{
+                    copy = $copyName; task = $spec.id; rep = $rep; model = ($Model ? $Model : 'default')
+                    started_at = ($startedAt.ToString('s') + 'Z'); wall_ms = $agent.wall_ms
+                    cost_usd = $m.cost_usd; num_turns = $m.num_turns; duration_ms = $m.duration_ms; duration_api_ms = $m.duration_api_ms
+                    input_tokens = $m.input_tokens; output_tokens = $m.output_tokens
+                    cache_read_tokens = $m.cache_read_tokens; cache_create_tokens = $m.cache_create_tokens
+                    ended = $m.ended; terminal_reason = $m.terminal_reason; stop_reason = $m.stop_reason
+                    is_error = $m.is_error; permission_denials = $m.permission_denials; skipped_lines = $m.skipped_lines
+                    files_read_distinct = $m.files_read_distinct; read_calls = $m.read_calls; grep_calls = $m.grep_calls; glob_calls = $m.glob_calls
+                    edit_calls = $m.edit_calls; write_calls = $m.write_calls; bash_calls = $m.bash_calls; bash_search_calls = $m.bash_search_calls
+                    gate_blocks = $gateBlocks; gate_blocks_build = $gateBlocksBuild
+                    files_changed = $changed.Count; lines_added = $added; lines_deleted = $deleted; files_out_of_scope = $outOfScope.Count
+                    build_ok = $buildOk
+                    behaviour_tests_passed = $behSum.passed; behaviour_tests_failed = $behSum.failed
+                    arch_tests_passed = $archSum.passed; arch_tests_failed = $archSum.failed
+                    dup_blocks_before = $dupBefore.clones; dup_blocks_after = $dupAfter.clones; dup_lines_pct_after = $dupAfter.percentage
+                    notes = ($notes -join '; ')
+                }
+                $row | Export-Csv -Path $csv -Append -NoTypeInformation
+                $runningTotal += [double]($m.cost_usd ?? 0)
+                Write-Host ("   cost {0}  turns {1}  files_read {2}  changed {3}  out_of_scope {4}  build {5}  behaviour {6}/{7}  arch {8}/{9}  total so far `${10:N2}" -f
+                    (Format-Metric $m.cost_usd '${0:N2}'), (Format-Metric $m.num_turns), $m.files_read_distinct, $changed.Count, $outOfScope.Count, $buildOk,
+                    (Format-Metric $behSum.passed), (Format-Metric $behSum.total), (Format-Metric $archSum.passed), (Format-Metric $archSum.total), $runningTotal)
             }
-            finally { Pop-Location }
-            $arch = Invoke-DotnetTest $dir $archProject 'arch.trx'
-            $beh = Invoke-DotnetTest $dir $behaviourProject[$copyName] 'behaviour.trx'
-            Set-Content -Path (Join-Path $artefacts 'test-output.txt') -Value ($arch.output + "`n`n" + $beh.output)
-            $archSum = Read-TrxSummary -Path $arch.trx
-            $behSum = Read-TrxSummary -Path $beh.trx
-
-            Push-Location $dir
-            try {
-                & git @git add -A
-                $changed = @(& git -c core.quotepath=false diff --cached --name-only)   # keep non-ASCII paths readable
-                $numstat = @(& git diff --cached --numstat)
-                & git diff --cached | Set-Content -Path (Join-Path $artefacts 'diff.patch') -Encoding utf8
+            catch {
+                # One row per repetition, always: a harness failure is recorded where the numbers are, not only on screen.
+                Write-Host "   harness error: $($_.Exception.Message)"
+                New-ResultRow @{
+                    copy = $copyName; task = $spec.id; rep = $rep; model = ($Model ? $Model : 'default')
+                    started_at = ($startedAt.ToString('s') + 'Z'); notes = "harness error: $($_.Exception.Message)"
+                } | Export-Csv -Path $csv -Append -NoTypeInformation
             }
-            finally { Pop-Location }
-            $added = 0; $deleted = 0
-            foreach ($n in $numstat) {
-                $parts = $n -split "`t"
-                if ($parts[0] -match '^\d+$') { $added += [int]$parts[0]; $deleted += [int]$parts[1] }
+            finally {
+                if ($dir -and -not $KeepRuns) { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
             }
-            $outOfScope = @($changed | Where-Object { -not (Test-PathInScope -Path $_ -Globs $spec.scope[$copyName]) })
-            Set-Content -Path (Join-Path $artefacts 'out-of-scope.txt') -Value ($outOfScope -join "`n")
-
-            $dupAfter = Invoke-Jscpd $dir
-            Copy-Item -Path (Join-Path $dir '.jscpd-report/jscpd-report.json') -Destination (Join-Path $artefacts 'jscpd.json') -ErrorAction SilentlyContinue
-
-            $gateBlocks = 0; $gateBlocksBuild = 0
-            $gateLog = Join-Path $dir '.gate.log'
-            if (Test-Path $gateLog) {
-                $blockLines = @(Get-Content $gateLog | Where-Object { $_ -match 'exit=2' })
-                $gateBlocks = $blockLines.Count
-                $gateBlocksBuild = @($blockLines | Where-Object { $_ -match ' build$' }).Count   # compile errors, not rule violations
-                Copy-Item -Path $gateLog -Destination (Join-Path $artefacts 'gate.log')
-            }
-
-            $notes = @()
-            if ($agent.exit -ne 0) { $notes += "claude exit $($agent.exit)" }
-            if (-not $m.saw_result) { $notes += 'no result event' }        # transcript stops mid-stream: cost and tokens are unknown, not zero
-            elseif ($m.ended -ne 'success') { $notes += "ended=$($m.ended)" }
-            if ($m.skipped_lines -gt 0) { $notes += "$($m.skipped_lines) unparsable event lines" }
-            if ($m.permission_denials -gt 0) { $notes += "$($m.permission_denials) permission denials" }
-            if (-not $archSum.found) { $notes += 'no arch trx (build failed?)' }
-            if (-not $behSum.found) { $notes += 'no behaviour trx (build failed?)' }
-            if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
-
-            $row = [pscustomobject][ordered]@{
-                copy = $copyName; task = $spec.id; rep = $rep; model = ($Model ? $Model : 'default')
-                started_at = $startedAt.ToString('s'); wall_ms = $agent.wall_ms
-                cost_usd = $m.cost_usd; num_turns = $m.num_turns; duration_ms = $m.duration_ms; duration_api_ms = $m.duration_api_ms
-                input_tokens = $m.input_tokens; output_tokens = $m.output_tokens
-                cache_read_tokens = $m.cache_read_tokens; cache_create_tokens = $m.cache_create_tokens
-                ended = $m.ended; terminal_reason = $m.terminal_reason; stop_reason = $m.stop_reason
-                is_error = $m.is_error; permission_denials = $m.permission_denials; skipped_lines = $m.skipped_lines
-                files_read_distinct = $m.files_read_distinct; read_calls = $m.read_calls; grep_calls = $m.grep_calls; glob_calls = $m.glob_calls
-                edit_calls = $m.edit_calls; write_calls = $m.write_calls; bash_calls = $m.bash_calls; bash_search_calls = $m.bash_search_calls
-                gate_blocks = $gateBlocks; gate_blocks_build = $gateBlocksBuild
-                files_changed = $changed.Count; lines_added = $added; lines_deleted = $deleted; files_out_of_scope = $outOfScope.Count
-                build_ok = $buildOk
-                behaviour_tests_passed = $behSum.passed; behaviour_tests_failed = $behSum.failed
-                arch_tests_passed = $archSum.passed; arch_tests_failed = $archSum.failed
-                dup_blocks_before = $dupBefore.clones; dup_blocks_after = $dupAfter.clones; dup_lines_pct_after = $dupAfter.percentage
-                notes = ($notes -join '; ')
-            }
-            $row | Export-Csv -Path $csv -Append -NoTypeInformation
-            $runningTotal += [double]($m.cost_usd ?? 0)
-            Write-Host ("   cost `${0:N2}  turns {1}  files_read {2}  changed {3}  out_of_scope {4}  build {5}  behaviour {6}/{7}  arch {8}/{9}  total so far `${10:N2}" -f
-                $m.cost_usd, $m.num_turns, $m.files_read_distinct, $changed.Count, $outOfScope.Count, $buildOk,
-                $behSum.passed, $behSum.total, $archSum.passed, $archSum.total, $runningTotal)
-
-            if (-not $KeepRuns) { Remove-Item -Recurse -Force $dir }
+            # Outside the catch: a runaway total stops the experiment instead of becoming one more row.
+            if ($runningTotal -gt $MaxTotalUsd) { throw "Total cost `$$runningTotal exceeds -MaxTotalUsd `$$MaxTotalUsd; stopping" }
         }
     }
 }
 Write-Host "Results: $csv"
 ```
 
-- [ ] **Step 2: Dry-check the script parses**
+- [ ] **Step 2: Write the stub CLI**
 
-Run: `pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1)) | Out-Null; 'parses'"`
-Expected: `parses`.
+`experiment/stub/` stands in for `claude` so that every part of the harness except the paid agent call can be exercised for
+nothing, and so that a broken harness is found before an experiment is paid for rather than during one. It is a `.cmd`, not a
+`.ps1`, so the runner starts a real child process with a real stdin, exactly as it starts `claude`.
 
-- [ ] **Step 3: Check the baseline path without spending anything**
+`experiment/stub/claude.cmd`:
 
-Run: `pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T0 -Repetitions 1`
-Expected: `No task files match -Task T0` — the argument validation runs before any copy is made. Then confirm the baseline copy works by running with `-KeepRuns` and a deliberately unavailable `claude`: `$env:PATH` unchanged is fine — instead run only the copy helper interactively:
-
-```powershell
-pwsh -NoProfile -Command ". prototypes/ai-development/vsa-agent-guardrails/experiment/Parse-Events.ps1; robocopy prototypes/ai-development/vsa-agent-guardrails/sliced $env:TEMP/vsa-runs/probe /E /XD bin obj /XF *.db /NFL /NDL /NJH /NJS /NP | Out-Null; Get-ChildItem $env:TEMP/vsa-runs/probe -Name"
+```bat
+@echo off
+rem Stand-in for the Claude Code CLI: `run.ps1 -ClaudeCommand experiment/stub/claude.cmd` drives the whole
+rem harness without spending anything. A .cmd, not a .ps1, so the runner starts a real child process with a
+rem real stdin, exactly as it starts `claude`.
+pwsh -NoProfile -File "%~dp0claude-stub.ps1"
+exit /b %ERRORLEVEL%
 ```
 
-Expected: `CLAUDE.md`, `Directory.Build.props`, `Orders.sln`, `src`, `tests`, `.claude`, `.config`, `.jscpd.json` listed and no `bin`/`obj`. Remove `$env:TEMP/vsa-runs/probe`.
+`experiment/stub/claude-stub.ps1`:
 
-- [ ] **Step 4: Commit**
+```powershell
+#requires -Version 7
+# Stand-in for `claude -p --output-format stream-json --verbose`, used to exercise run.ps1 end to end for
+# free. Like the real CLI it runs in the run directory, reads the prompt from stdin, changes the working
+# tree and prints a transcript on stdout. Works in either copy: the behaviour test project decides the
+# in-scope file. Two environment toggles let the runner's own verification steps reach its failure paths:
+#   VSA_STUB_COMMIT=1  commit the change, so the runner must measure against the baseline commit, not HEAD
+#   VSA_STUB_FAIL=1    print nothing at all and exit 3, so the runner must survive a missing transcript
+$ErrorActionPreference = 'Stop'
+$prompt = [Console]::In.ReadToEnd()
+[Console]::Error.WriteLine("stub: $($prompt.Length) prompt characters, cwd $($PWD.Path)")
+if ($env:VSA_STUB_FAIL -eq '1') { exit 3 }
+
+$inScope = @('tests/Orders.SliceTests/HttpAssertions.cs', 'tests/Orders.IntegrationTests/HttpAssertions.cs') |
+    Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $inScope) { [Console]::Error.WriteLine('stub: no behaviour test project here'); exit 1 }
+Add-Content -LiteralPath $inScope -Value '// stub edit'                     # one file inside the task's scope
+Set-Content -LiteralPath 'stub-notes.txt' -Value 'deliberately out of scope'   # and one outside it
+Set-Content -LiteralPath '.gate.log' -Value @(                              # the shape gate.sh writes
+    '2026-01-01T00:00:00Z PostToolUse exit=2 Orders.Api build',
+    '2026-01-01T00:00:01Z Stop exit=2 Orders.Api test',
+    '2026-01-01T00:00:02Z Stop exit=0'
+)
+if ($env:VSA_STUB_COMMIT -eq '1') {
+    & git add -A 2>&1 | Out-Null
+    & git -c user.name=stub -c user.email=stub@example.invalid commit -q -m 'stub commit' 2>&1 | Out-Null
+}
+
+$toolUse = @(
+    '{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"src/Orders.Api/Program.cs"}}'
+    '{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"CLAUDE.md"}}'
+    '{"type":"tool_use","id":"t3","name":"Read","input":{"file_path":"src/Orders.Api/Program.cs"}}'
+    '{"type":"tool_use","id":"t4","name":"Grep","input":{"pattern":"Order"}}'
+    '{"type":"tool_use","id":"t5","name":"Glob","input":{"pattern":"**/*.cs"}}'
+    '{"type":"tool_use","id":"t6","name":"Edit","input":{"file_path":"' + $inScope + '"}}'
+    '{"type":"tool_use","id":"t7","name":"Write","input":{"file_path":"stub-notes.txt"}}'
+    '{"type":"tool_use","id":"t8","name":"Bash","input":{"command":"dotnet build"}}'
+    '{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"ls src"}}'
+) -join ','
+$transcript = @(
+    '{"type":"system","subtype":"init","cwd":"."}'
+    '{"type":"assistant","message":{"content":[' + $toolUse + ']}}'
+    'a line that is not JSON, so that skipped_lines is exercised too'
+    '{"type":"result","subtype":"success","total_cost_usd":0.1234,"num_turns":7,"duration_ms":12345,' +
+    '"duration_api_ms":9876,"is_error":false,"terminal_reason":"completed","stop_reason":"end_turn",' +
+    '"permission_denials":[],"usage":{"input_tokens":1200,"output_tokens":340,' +
+    '"cache_read_input_tokens":50000,"cache_creation_input_tokens":2000}}'
+)
+foreach ($line in $transcript) { [Console]::Out.WriteLine($line) }
+exit 0
+```
+
+- [ ] **Step 3: Dry-check the scripts parse**
 
 ```bash
-git add prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1
+pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1)) | Out-Null; 'parses'"
+pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw prototypes/ai-development/vsa-agent-guardrails/experiment/stub/claude-stub.ps1)) | Out-Null; 'parses'"
+```
+
+Expected: `parses` twice.
+
+- [ ] **Step 4: Check the argument validation, which runs before anything is copied or spent**
+
+```bash
+pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T1,T9 -Repetitions 1
+pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T0 -Repetitions 1
+pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1 -ClaudeCommand nope
+```
+
+Expected, in order: `Unknown task id(s): T9. Known ids: T1, T2, T3, T4, T5, or 'all'.` — a typo must not silently shrink the
+experiment to the ids it recognises; `Unknown task id(s): T0. …`; `-ClaudeCommand 'nope' is neither on PATH nor a path to a
+command`. No `experiment/results/` folder is created and nothing is copied to `%TEMP%\vsa-runs`.
+
+- [ ] **Step 5: Drive the whole harness with the stub, both copies, for free**
+
+```bash
+pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy both -Task T1 -Repetitions 1 -Yes \
+  -ClaudeCommand prototypes/ai-development/vsa-agent-guardrails/experiment/stub/claude.cmd \
+  -ResultsDir "$TEMP/vsa-stub-results" -KeepRuns
+```
+
+Expected (a few minutes; the baseline check builds and tests each copy before the run):
+
+```
+== baseline check: sliced
+== run sliced-T1-1 (Ship an order)
+   cost $0.12  turns 7  files_read 2  changed 2  out_of_scope 1  build True  behaviour 14/14  arch 10/10  total so far $0.12
+== baseline check: layered
+== run layered-T1-1 (Ship an order)
+   cost $0.12  turns 7  files_read 2  changed 2  out_of_scope 1  build True  behaviour 14/14  arch 9/9  total so far $0.25
+```
+
+Both CSV rows must have `gate_blocks` 2, `gate_blocks_build` 1, `files_changed` 2, `lines_added` 2, `files_out_of_scope` 1,
+`build_ok` True, `notes` exactly `1 unparsable event line` (the stub prints one line that is not JSON on purpose) and no
+`agent committed`. Each run folder must hold `prompt.md`, `events.jsonl`, `stderr.txt`, `build.txt`, `test-output.txt`,
+`diff.patch` (not empty), `out-of-scope.txt` (`stub-notes.txt`), `gate.log` and `jscpd.json`. In a kept run directory,
+`git ls-files --eol .claude/hooks/gate.sh` must print `i/lf`: a CRLF hook fails under Git Bash with MSB1003.
+
+- [ ] **Step 6: Check the two paths that silently lost data before**
+
+```bash
+VSA_STUB_COMMIT=1 pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1 \
+  -ClaudeCommand prototypes/ai-development/vsa-agent-guardrails/experiment/stub/claude.cmd -ResultsDir "$TEMP/vsa-stub-commit"
+VSA_STUB_FAIL=1 pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 2 -Yes \
+  -ClaudeCommand prototypes/ai-development/vsa-agent-guardrails/experiment/stub/claude.cmd -ResultsDir "$TEMP/vsa-stub-fail"
+```
+
+Expected: with `VSA_STUB_COMMIT` the stub commits its edit, so `git diff --cached` against `HEAD` would show nothing — the row
+must still read `changed 2  out_of_scope 1` and its `notes` must contain `agent committed (1 commits)`. With `VSA_STUB_FAIL`
+the stub prints nothing at all and exits 3, so the pipeline writes no `events.jsonl` and the runner has to create an empty one:
+both repetitions must still produce a row, `cost n/a  turns n/a` on screen, `notes` `claude exit 3; no result event`, empty `cost_usd`/`num_turns`
+columns (an unknown cost is not a zero) and `behaviour 14/14`. Any unexpected exception inside a repetition is caught the
+same way and written as a row whose `notes` start with `harness error:`, so one broken run cannot silently shorten the CSV.
+
+- [ ] **Step 7: Check the cost guards**
+
+```bash
+pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 2 -Yes -MaxTotalUsd 0.05 \
+  -ClaudeCommand prototypes/ai-development/vsa-agent-guardrails/experiment/stub/claude.cmd -ResultsDir "$TEMP/vsa-stub-cap"
+```
+
+Expected: the first row is written, then `Total cost $0.1234 exceeds -MaxTotalUsd $0.05; stopping` and exit 1 — one data row
+in the CSV, not two. Without `-Yes`, any run of more than one repetition first prints
+`About to make 2 agent runs: worst case $16.00 at -MaxBudgetUsd $8.00 each.` and waits for a typed `y`.
+
+Delete the scratch results folders and `%TEMP%\vsa-runs` afterwards.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 prototypes/ai-development/vsa-agent-guardrails/experiment/stub
 git commit -m "vsa-agent-guardrails(experiment): runner"
 ```
 
@@ -3855,7 +4065,8 @@ Prerequisites: `claude` logged in on this machine (`claude --version` prints `2.
 
 - [ ] **Step 1: Run the smoke test**
 
-Run: `pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1`
+Run: `pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1 -KeepRuns`
+(`-KeepRuns` leaves the temporary copy at `%TEMP%\vsa-runs\sliced-T1-1` so step 2 can look at what the agent actually did.)
 Expected: `== baseline check: sliced`, `== run sliced-T1-1 (Ship an order)`, then a summary line such as `cost $3.12  turns 24  files_read 9  changed 6  out_of_scope 0  build True  behaviour 17/17  arch 10/10  total so far $3.12`, then `Results: ...results/<timestamp>/results.csv`. Open the CSV: one data row with every column filled (`notes` may be empty). Look at `events.jsonl`, `diff.patch` and `gate.log` in the run's artefact folder; the diff should show a new `Features/ShipOrder/` folder and a new test class. If `behaviour_tests_failed` is not 0 or `files_out_of_scope` is not 0, that is a finding, not a harness error — keep it.
 
 If the run ends with `ended=error_max_budget_usd` or `claude exit 1` in `notes`, raise `-MaxBudgetUsd` and repeat once; if it ends with permission denials, inspect `stderr.txt` and `events.jsonl` for the denied tool.
@@ -3864,10 +4075,25 @@ Also read the `result` line of the smoke run's `events.jsonl`: the fixture `expe
 `"terminal_reason":"completed"` for a successful run. If the real value differs, put the real one into the fixture and the
 `terminal_reason` assertion in `Test-ParseEvents.ps1` (and their blocks in Task 16), and include that in this task's commit.
 
-- [ ] **Step 2: Keep the row as the committed example**
+- [ ] **Step 2: Check the row is a measurement, then keep it as the committed example**
+
+A row can be written by a run that measured nothing, so check before copying it — from the repository root, with `<timestamp>`
+replaced by the results folder name:
+
+```bash
+pwsh -NoProfile -Command 'Import-Csv prototypes/ai-development/vsa-agent-guardrails/experiment/results/<timestamp>/results.csv | Format-List copy, task, files_changed, build_ok, notes'
+wc -c prototypes/ai-development/vsa-agent-guardrails/experiment/results/<timestamp>/sliced-T1-1/diff.patch
+(cd "$TEMP/vsa-runs/sliced-T1-1" && git log --oneline)
+```
+
+Expected: `files_changed` greater than 0, `notes` with no `harness error:` in it, a `diff.patch` of more than 0 bytes, and a
+`git log` showing the `baseline` commit — plus any commits the agent made itself, which the row records as
+`agent committed (n commits)`. `files_changed` 0 with an empty `diff.patch` means the harness failed to measure, not that the
+agent did nothing: fix that before spending anything more, and do not commit the row.
 
 ```bash
 cp prototypes/ai-development/vsa-agent-guardrails/experiment/results/<timestamp>/results.csv prototypes/ai-development/vsa-agent-guardrails/experiment/results/example-results.csv
+rm -rf "$TEMP/vsa-runs"
 ```
 
 - [ ] **Step 3: Report template**
@@ -4145,13 +4371,23 @@ Requires PowerShell 7, Node 22 (`npx jscpd@4`), Git, Git Bash (the hooks are `sh
 
     pwsh experiment/Test-ParseEvents.ps1                                  # the metrics library's tests, free
     pwsh experiment/Test-Parity.ps1                                       # both copies answer identically, free
+    pwsh experiment/run.ps1 -Task T1 -Repetitions 1 -Yes -ClaudeCommand experiment/stub/claude.cmd   # the harness itself, free
     pwsh experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1          # smoke run, one paid agent run (~$2–8)
-    pwsh experiment/run.ps1                                               # both copies, five tasks, 3 repetitions (~$60–150)
+    pwsh experiment/run.ps1 -Yes                                          # both copies, five tasks, 3 repetitions (~$60–150)
+
+Options: `-Copy sliced|layered|both`, `-Task T1[,T3]` (an unknown id fails before anything is copied or spent), `-Repetitions n`,
+`-MaxBudgetUsd` (default 8; the per-run cap handed to `claude` itself), `-MaxTotalUsd` (default 200; stops the experiment as soon
+as the rows add up past it), `-Model` (default: whatever the CLI is configured with), `-ResultsDir`, `-KeepRuns` (leave the
+temporary copies behind for inspection), `-Yes` (skip the typed confirmation — required for unattended runs of more than one
+repetition) and `-ClaudeCommand` (which CLI to drive; `experiment/stub/claude.cmd` exercises the whole harness for nothing and is
+how to check a change to `run.ps1` before paying for one).
 
 Each run copies the variant to `%TEMP%\vsa-runs\`, gives Claude Code the task with project settings only (no user-level plugins or
-hooks), an explicit tool allow-list and a budget cap, then builds, tests, diffs, runs jscpd, and appends a row to
-`experiment/results/<timestamp>/results.csv`. `experiment/results/example-results.csv` shows the columns; `experiment/REPORT.md`
-is the template for writing the numbers up. Nothing in the repository is modified by a run.
+hooks), an explicit tool allow-list and a budget cap, then builds, tests, diffs against the copy's baseline commit, runs jscpd, and
+appends a row to `experiment/results/<timestamp>/results.csv` — one row per repetition, including for a repetition that failed
+(`notes` then starts with `harness error:`). `experiment/results/example-results.csv` shows the columns; `experiment/REPORT.md`
+is the template for writing the numbers up. Nothing in the repository is modified by a run; an interrupted run leaves its copy
+under `%TEMP%\vsa-runs\`, which is safe to delete.
 
 ## Tasks
 
