@@ -20,7 +20,7 @@ public class SliceRules
     [Fact]
     public void The_slice_pattern_still_matches_slices() =>
         // A slice rule passes vacuously when its pattern matches nothing; this keeps the rule below honest.
-        Assert.Contains(Api.Types, t => t.Namespace.FullName.StartsWith("Orders.Api.Features.", StringComparison.Ordinal));
+        Assert.Contains(Api.Types, t => t.Namespace.FullName.StartsWith("Orders.Api.Features.", StringComparison.Ordinal));   // not NotEmpty(...Where(...)): xUnit2030
 
     [Fact]
     public void Slices_do_not_depend_on_each_other() =>
@@ -32,7 +32,7 @@ public class SliceRules
     public void Slices_depend_only_on_domain_platform_and_frameworks() =>
         // Anything else under Orders.Api — a type directly in Features, a Common/ or Helpers/ namespace — is a shared-code shortcut.
         Types().That().ResideInNamespaceMatching(@"^Orders\.Api\.Features\.")
-            .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Orders\.Api(?!\.(Features\.|Domain|Platform))"))
+            .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Orders\.Api(?!\.((Features|Domain|Platform)\.|(Domain|Platform)$))"))
             .Check(Api);
 
     [Fact]

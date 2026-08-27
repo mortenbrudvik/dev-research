@@ -1,11 +1,16 @@
 using ArchUnitNET.Domain;
 using ArchUnitNET.Loader;
+using ArchUnitNET.xUnit;
 using static ArchUnitNET.Fluent.ArchRuleDefinition;
 using static ArchUnitNET.Fluent.Slices.SliceRuleDefinition;
 
 namespace Orders.ArchitectureTests;
 
-/// <summary>Proves the rules can fail: each rule is evaluated against a fixture assembly that violates it.</summary>
+/// <summary>
+/// Proves the rules can fail: each rule is evaluated against a fixture assembly that violates it. The type-based
+/// controls assert the *named* violation, because ArchUnitNET reports a mistyped subject pattern as a violation too,
+/// which would let a rotted pattern pass a plain HasNoViolations check.
+/// </summary>
 public class NegativeControl
 {
     private static readonly Architecture FixtureArchitecture =
@@ -25,9 +30,10 @@ public class NegativeControl
     public void Shared_code_rule_fails_when_a_slice_uses_a_type_directly_under_features()
     {
         var rule = Types().That().ResideInNamespaceMatching(@"^Fixture\.Features\.")
-            .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Fixture(?!\.(Features\.|Domain|Platform))"));
+            .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Fixture(?!\.((Features|Domain|Platform)\.|(Domain|Platform)$))"));
 
-        Assert.False(rule.HasNoViolations(FixtureArchitecture), RestoreFixture);
+        var error = Assert.Throws<FailedArchRuleException>(() => rule.Check(FixtureArchitecture));
+        Assert.Contains("Fixture.Features.D.DUser", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -36,6 +42,7 @@ public class NegativeControl
         var rule = Types().That().ResideInNamespaceMatching(@"^Fixture\.Domain")
             .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Fixture\.(Features|Platform)"));
 
-        Assert.False(rule.HasNoViolations(FixtureArchitecture), RestoreFixture);
+        var error = Assert.Throws<FailedArchRuleException>(() => rule.Check(FixtureArchitecture));
+        Assert.Contains("Fixture.Domain.Entity", error.Message, StringComparison.Ordinal);
     }
 }
