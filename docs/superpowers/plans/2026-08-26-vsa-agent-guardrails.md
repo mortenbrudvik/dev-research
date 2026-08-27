@@ -1692,7 +1692,7 @@ fi
 if [ "$event" = "PostToolUse" ]; then
   file=$(printf '%s' "$input" | grep -o '"file_path": *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
   case "$file" in
-    *.cs|*.csproj|*.props) ;;
+    ""|*.cs|*.csproj|*.props) ;;   # an unparsed path fails closed: the tests run
     *) echo "$(stamp) $event skipped non-code file" >> .gate.log; exit 0 ;;
   esac
   projects="tests/Orders.ArchitectureTests"
@@ -1704,8 +1704,10 @@ for project in $projects; do
   # -v q silences MSBuild; the console logger at normal verbosity keeps the assertion block (Expected/Actual);
   # the Logging override keeps EF Core's SQL out of the output.
   if ! out=$(Logging__LogLevel__Default=Warning dotnet test "$project" --nologo -v q --logger "console;verbosity=normal" 2>&1); then
+    # No "Test run for" line means the tests never ran: a build or restore failure (CS, xUnit analyzer, NU, MSB),
+    # i.e. a half-written change, not a rule violation.
     reason=test
-    if printf '%s' "$out" | grep -q 'error CS'; then reason=build; fi   # a half-written slice, not a rule violation
+    if ! printf '%s' "$out" | grep -q '^Test run for '; then reason=build; fi
     echo "$(stamp) $event exit=2 $project $reason" >> .gate.log
     # Drop stack frames, per-test "Passed" lines and leftover noise so the failure messages survive the cut.
     printf '%s\n' "$out" | grep -v -e '^ *at ' -e '^ *Passed ' -e '^info: ' -e '^ *Stack Trace:$' -e '^--- End of stack trace' | tail -80 >&2
@@ -1747,13 +1749,13 @@ obj/
 .trx/
 ```
 
-`prototypes/ai-development/vsa-agent-guardrails/.gitattributes` — this machine has `core.autocrlf=true`; without this a fresh clone checks `gate.sh` out with CRLF and every hook invocation fails with `MSB1003`:
+`prototypes/ai-development/vsa-agent-guardrails/.gitattributes` **and** `sliced/.gitattributes` (same one line) — this machine has `core.autocrlf=true`; without the attribute a fresh clone checks `gate.sh` out with CRLF and every hook invocation fails with `MSB1003`. The copy inside the variant travels with it into the runner's temporary git repository, so a `git checkout`/`restore` there cannot turn the hook into CRLF either:
 
 ```
 *.sh text eol=lf
 ```
 
-After adding it run, from the repository root, `git add --renormalize prototypes/ai-development/vsa-agent-guardrails` so the existing `gate.sh` blob is stored with LF.
+After adding them run, from the repository root, `git add --renormalize prototypes/ai-development/vsa-agent-guardrails` so the existing `gate.sh` blob is stored with LF.
 
 - [ ] **Step 4: Test the gate script by hand**
 
@@ -2827,7 +2829,7 @@ Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed
   projects="tests/Orders.ArchitectureTests tests/Orders.IntegrationTests"
 ```
 
-`layered/.gitignore`: identical to `sliced/.gitignore` (Task 9, Step 3).
+`layered/.gitignore` and `layered/.gitattributes`: identical to the sliced ones (Task 9, Step 3).
 
 `layered/.jscpd.json`: identical to `sliced/.jscpd.json` (Task 9, Step 3).
 
