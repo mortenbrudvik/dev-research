@@ -2301,7 +2301,7 @@ namespace Orders.Api.Common;
 /// <summary>
 /// Runs the FluentValidation validator registered for TRequest; 400 with ProblemDetails on failure.
 /// Adding this filter to an endpoint is a statement that a validator exists, so a missing registration
-/// throws at request time (a 500 in the slice test) instead of silently skipping validation.
+/// throws at request time (a 500 in the integration test) instead of silently skipping validation.
 /// </summary>
 public sealed class ValidationFilter<TRequest> : IEndpointFilter
 {
@@ -2333,10 +2333,11 @@ using Orders.Domain.Exceptions;
 
 namespace Orders.Api.Common;
 
+/// <summary>A DomainException anywhere in a handler becomes a 409 ProblemDetails, identical in shape to Results.Problem.</summary>
 public sealed class DomainExceptionHandler(IProblemDetailsService problemDetails) : IExceptionHandler
 {
     // Safety net: in the baseline no handler lets a DomainException escape (policies are checked first and answer
-    // with Results.Problem). It exists so that a slice which calls Order.Ship()/Cancel() directly still yields a 409.
+    // with Results.Problem). It exists so that a handler which calls Order.Ship()/Cancel() directly still yields a 409.
     public async ValueTask<bool> TryHandleAsync(HttpContext httpContext, Exception exception, CancellationToken cancellationToken)
     {
         if (exception is not DomainException || httpContext.Response.HasStarted)
@@ -2496,6 +2497,7 @@ Replace `src/Orders.Api/appsettings.json` with the content from Task 3, Step 4. 
 
   <ItemGroup>
     <ProjectReference Include="..\Orders.Application\Orders.Application.csproj" />
+    <ProjectReference Include="..\Orders.Domain\Orders.Domain.csproj" />   <!-- explicit: the endpoints use Orders.Domain.Enums -->
     <ProjectReference Include="..\Orders.Infrastructure\Orders.Infrastructure.csproj" />
   </ItemGroup>
 
@@ -2810,8 +2812,10 @@ Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed
   Domain only. An endpoint that binds a request body adds `.AddEndpointFilter<ValidationFilter<TCommand>>()`, which
   requires a public `<Command>Validator` in the command's folder; the filter throws if none is registered.
 - `src/Orders.Infrastructure`: `OrdersDbContext`, migrations, `DependencyInjection.cs`. Depends on Application and Domain.
-- `src/Orders.Api`: all routes in `Endpoints/OrdersEndpoints.cs`; HTTP concerns in `Common/`. Never reference
-  `Orders.Infrastructure.Persistence` from the API; the composition root in `Program.cs` is the only exception.
+- `src/Orders.Api`: the `/orders` routes live in `Endpoints/OrdersEndpoints.cs`; a route outside `/orders` gets its
+  own `Endpoints/<Name>Endpoints.cs` with a `Map<Name>Endpoints` extension called from `Program.cs`. HTTP concerns
+  in `Common/`. Never reference `Orders.Infrastructure.Persistence` from the API; the composition root in
+  `Program.cs` is the only exception.
 - Every command or query ships with a test class in `tests/Orders.IntegrationTests/<UseCase>Tests.cs` that sends the
   request through the endpoint and asserts the response and the persisted state. Use `ApiFixture`; do not mock the database.
 - Domain rule violations surface as HTTP 409 (`DomainException` or an explicit conflict result); validation failures as 400.
@@ -2907,7 +2911,7 @@ id: T3
 title: List a customer's orders
 kind: slice-local
 scope.sliced: src/Orders.Api/Features/*Customer*/**, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Application/Orders/Queries/*Customer*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/**, tests/Orders.IntegrationTests/**
+scope.layered: src/Orders.Application/Orders/Queries/*Customer*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/**, src/Orders.Api/Program.cs, tests/Orders.IntegrationTests/**
 ---
 Add a way to list one customer's orders.
 
