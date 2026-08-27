@@ -4,10 +4,13 @@
   Runs Claude Code headlessly against the sliced and layered copies on the experiment tasks and records metrics.
 .DESCRIPTION
   Per copy x task x repetition: copies the variant to %TEMP%\vsa-runs\<name>, makes it a git repo with one baseline commit,
-  runs `claude -p` with the prompt on stdin (spec 5.2), then builds, tests, diffs, runs jscpd, and appends one CSV row.
+  runs `claude -p` with the prompt on stdin (spec 5.2), then builds, tests, diffs against that baseline commit, runs jscpd,
+  and appends one CSV row. Every repetition writes exactly one row: an unexpected failure becomes a row whose notes start
+  with "harness error", and the experiment carries on.
 .EXAMPLE
-  pwsh experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1        # smoke run
-  pwsh experiment/run.ps1                                              # full experiment: both copies, all tasks, 3 reps
+  pwsh experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1        # smoke run, one paid agent run
+  pwsh experiment/run.ps1 -Yes                                        # full experiment: both copies, all tasks, 3 reps
+  pwsh experiment/run.ps1 -Task T1 -Repetitions 1 -Yes -ClaudeCommand experiment/stub/claude.cmd   # harness test, free
 #>
 [CmdletBinding()]
 param(
@@ -15,23 +18,44 @@ param(
     [string[]]$Task = @('all'),
     [int]$Repetitions = 3,
     [double]$MaxBudgetUsd = 8,
+    [double]$MaxTotalUsd = 200,
     [string]$Model,
+    [string]$ClaudeCommand = 'claude',
     [string]$ResultsDir,
-    [switch]$KeepRuns
+    [switch]$KeepRuns,
+    [switch]$Yes
 )
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[cultureinfo]::CurrentCulture = [cultureinfo]::InvariantCulture   # "-MaxBudgetUsd 2,5" and CSV decimals must not follow a comma culture
 
 . "$PSScriptRoot/Parse-Events.ps1"
 
 $root = Split-Path -Path $PSScriptRoot -Parent
-$claude = (Get-Command -Name claude -ErrorAction Stop).Source
+$claudeCmd = Get-Command -Name $ClaudeCommand -ErrorAction SilentlyContinue
+if (-not $claudeCmd) { throw "-ClaudeCommand '$ClaudeCommand' is neither on PATH nor a path to a command" }
+$claude = (Resolve-Path -LiteralPath $claudeCmd.Source).Path      # absolute: the CLI is invoked after Push-Location
 $copies = if ($Copy -eq 'both') { @('sliced', 'layered') } else { @($Copy) }
 $taskFiles = @(Get-ChildItem -Path "$PSScriptRoot/tasks" -Filter 'T*.md' | Sort-Object Name)
-if ($Task -notcontains 'all') { $taskFiles = @($taskFiles | Where-Object { $Task -contains ($_.BaseName -split '-')[0] }) }
+$knownIds = @($taskFiles | ForEach-Object { ($_.BaseName -split '-')[0] })
+$Task = @($Task -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })   # `pwsh run.ps1 -Task T1,T2` arrives as one string
+if ($Task -notcontains 'all') {
+    # A typo must not silently shrink the experiment: -Task T1,T9 fails here, before anything is copied or spent.
+    $unknown = @($Task | Where-Object { $knownIds -notcontains $_ })
+    if ($unknown.Count -gt 0) { throw "Unknown task id(s): $($unknown -join ', '). Known ids: $($knownIds -join ', '), or 'all'." }
+    $taskFiles = @($taskFiles | Where-Object { $Task -contains ($_.BaseName -split '-')[0] })
+}
 if ($taskFiles.Count -eq 0) { throw "No task files match -Task $($Task -join ',')" }
+
+$plannedRuns = $copies.Count * $taskFiles.Count * $Repetitions
+if ($plannedRuns -gt 1 -and -not $Yes) {
+    Write-Host ("About to make {0} agent runs: worst case `${1:N2} at -MaxBudgetUsd `${2:N2} each." -f
+        $plannedRuns, ($plannedRuns * $MaxBudgetUsd), $MaxBudgetUsd)
+    if ((Read-Host 'Proceed? Type y to continue') -ne 'y') { throw 'Cancelled; nothing was run. Pass -Yes for unattended runs.' }
+}
+
 if (-not $ResultsDir) { $ResultsDir = Join-Path $PSScriptRoot "results/$(Get-Date -Format 'yyyyMMdd-HHmmss')" }
 New-Item -ItemType Directory -Force -Path $ResultsDir | Out-Null
 $ResultsDir = (Resolve-Path -LiteralPath $ResultsDir).Path        # a relative -ResultsDir must survive Push-Location
@@ -41,23 +65,53 @@ $behaviourProject = @{ sliced = 'tests/Orders.SliceTests'; layered = 'tests/Orde
 $archProject = 'tests/Orders.ArchitectureTests'
 $git = @('-c', 'user.name=runner', '-c', 'user.email=runner@example.invalid')
 
+function New-ResultRow([hashtable]$values) {
+    # One fixed column set for every row. Export-Csv -Append rejects an object whose properties differ from the
+    # header, so a harness-error row must carry the same columns, in the same order, with the rest left empty.
+    $row = [ordered]@{}
+    foreach ($name in @(
+            'copy', 'task', 'rep', 'model', 'started_at', 'wall_ms',
+            'cost_usd', 'num_turns', 'duration_ms', 'duration_api_ms',
+            'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_create_tokens',
+            'ended', 'terminal_reason', 'stop_reason', 'is_error', 'permission_denials', 'skipped_lines',
+            'files_read_distinct', 'read_calls', 'grep_calls', 'glob_calls',
+            'edit_calls', 'write_calls', 'bash_calls', 'bash_search_calls',
+            'gate_blocks', 'gate_blocks_build',
+            'files_changed', 'lines_added', 'lines_deleted', 'files_out_of_scope', 'build_ok',
+            'behaviour_tests_passed', 'behaviour_tests_failed', 'arch_tests_passed', 'arch_tests_failed',
+            'dup_blocks_before', 'dup_blocks_after', 'dup_lines_pct_after', 'notes')) {
+        $row[$name] = if ($values.ContainsKey($name)) { $values[$name] } else { '' }
+    }
+    return [pscustomobject]$row
+}
+
+function Format-Metric($value, [string]$format = '{0}') {
+    # A missing number is not a zero: an interrupted run must not print "cost $0.00" or "behaviour 0/0".
+    if ($null -eq $value) { return 'n/a' }
+    return ($format -f $value)
+}
+
 function New-RunDirectory([string]$copyName, [string]$runName) {
     $src = Join-Path $root $copyName
     $dst = Join-Path $runsRoot $runName
     if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
-    & robocopy $src $dst /E /XD bin obj .jscpd-report .trx /XF *.db *.db-shm *.db-wal .gate.log /NFL /NDL /NJH /NJS /NP | Out-Null
+    & robocopy $src $dst /E /XD bin obj worktrees .jscpd-report .trx /XF *.db *.db-shm *.db-wal .gate.log /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy $src -> $dst failed with exit code $LASTEXITCODE" }
     Push-Location $dst
     try {
         & dotnet tool restore 2>&1 | Out-Null          # makes `dotnet ef` available in the fresh copy (local tool manifest)
+        & dotnet ef --version 2>&1 | Out-Null          # `tool restore` exits 0 with no manifest, so probe the capability itself
+        if ($LASTEXITCODE -ne 0) { throw "dotnet ef is unavailable in $dst - dotnet tool restore did not succeed" }
         & git init -q
-        & git @git add -A
+        & git @git add -A 2>&1 | Out-Null              # discards the autocrlf "LF will be replaced by CRLF" warnings
+        if ($LASTEXITCODE -ne 0) { throw "git add -A failed in $dst" }
         & git @git commit -q -m 'baseline'
         if ($LASTEXITCODE -ne 0) { throw "baseline commit failed in $dst" }
+        $baseSha = (& git rev-parse HEAD).Trim()
     }
     finally { Pop-Location }
-    return $dst
+    return [pscustomobject]@{ dir = $dst; baseSha = $baseSha }
 }
 
 function Invoke-DotnetTest([string]$dir, [string]$project, [string]$trxName) {
@@ -102,7 +156,8 @@ function Invoke-Agent([string]$dir, [string]$promptFile, [string]$eventsFile, [s
 $runningTotal = 0.0
 foreach ($copyName in $copies) {
     Write-Host "== baseline check: $copyName"
-    $base = New-RunDirectory $copyName "$copyName-baseline"
+    $baseRun = New-RunDirectory $copyName "$copyName-baseline"
+    $base = $baseRun.dir
     $archBase = Invoke-DotnetTest $base $archProject 'arch.trx'
     $behBase = Invoke-DotnetTest $base $behaviourProject[$copyName] 'behaviour.trx'
     if (-not ($archBase.ok -and $behBase.ok)) {
@@ -116,92 +171,116 @@ foreach ($copyName in $copies) {
         for ($rep = 1; $rep -le $Repetitions; $rep++) {
             $runName = "$copyName-$($spec.id)-$rep"
             Write-Host "== run $runName ($($spec.title))"
-            $startedAt = Get-Date
-            $dir = New-RunDirectory $copyName $runName
-            $artefacts = Join-Path $ResultsDir $runName
-            New-Item -ItemType Directory -Force -Path $artefacts | Out-Null
-            $promptFile = Join-Path $artefacts 'prompt.md'
-            Set-Content -Path $promptFile -Value $spec.prompt -Encoding utf8
-            $events = Join-Path $artefacts 'events.jsonl'
-
-            $agent = Invoke-Agent $dir $promptFile $events (Join-Path $artefacts 'stderr.txt')
-            $m = ConvertFrom-AgentEvents -Path $events
-
-            Push-Location $dir
+            $startedAt = (Get-Date).ToUniversalTime()
+            $dir = $null
             try {
-                & dotnet build --nologo -v q 2>&1 | Set-Content -Path (Join-Path $artefacts 'build.txt')
-                $buildOk = ($LASTEXITCODE -eq 0)
+                $run = New-RunDirectory $copyName $runName
+                $dir = $run.dir
+                $baseSha = $run.baseSha
+                $artefacts = Join-Path $ResultsDir $runName
+                New-Item -ItemType Directory -Force -Path $artefacts | Out-Null
+                $promptFile = Join-Path $artefacts 'prompt.md'
+                Set-Content -Path $promptFile -Value $spec.prompt -Encoding utf8
+                $events = Join-Path $artefacts 'events.jsonl'
+
+                $agent = Invoke-Agent $dir $promptFile $events (Join-Path $artefacts 'stderr.txt')
+                # A CLI that writes nothing at all to stdout leaves Set-Content with no input, and no file to parse.
+                if (-not (Test-Path -LiteralPath $events)) { Set-Content -Path $events -Value '' -Encoding utf8 }
+                $m = ConvertFrom-AgentEvents -Path $events
+
+                Push-Location $dir
+                try {
+                    & dotnet build --nologo -v q 2>&1 | Set-Content -Path (Join-Path $artefacts 'build.txt')
+                    $buildOk = ($LASTEXITCODE -eq 0)
+                }
+                finally { Pop-Location }
+                $arch = Invoke-DotnetTest $dir $archProject 'arch.trx'
+                $beh = Invoke-DotnetTest $dir $behaviourProject[$copyName] 'behaviour.trx'
+                Set-Content -Path (Join-Path $artefacts 'test-output.txt') -Value ($arch.output + "`n`n" + $beh.output)
+                $archSum = Read-TrxSummary -Path $arch.trx
+                $behSum = Read-TrxSummary -Path $beh.trx
+
+                Push-Location $dir
+                try {
+                    & git @git add -A 2>&1 | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw "git add -A failed in $dir" }
+                    # Always against the baseline commit, never HEAD: an agent that commits its own work would
+                    # otherwise measure as having changed nothing. --no-renames: a moved file counts as two files.
+                    $changed = @(& git -c core.quotepath=false diff --cached --no-renames --name-only $baseSha)   # keep non-ASCII paths readable
+                    $numstat = @(& git diff --cached --no-renames --numstat $baseSha)
+                    & git -c core.quotepath=false diff --cached --no-renames $baseSha | Set-Content -Path (Join-Path $artefacts 'diff.patch') -Encoding utf8
+                    $head = (& git rev-parse HEAD).Trim()
+                    $agentCommits = if ($head -eq $baseSha) { 0 } else { [int](& git rev-list --count "$baseSha..HEAD").Trim() }
+                }
+                finally { Pop-Location }
+                $added = 0; $deleted = 0
+                foreach ($n in $numstat) {
+                    $parts = $n -split "`t"
+                    if ($parts[0] -match '^\d+$') { $added += [int]$parts[0]; $deleted += [int]$parts[1] }
+                }
+                $outOfScope = @($changed | Where-Object { -not (Test-PathInScope -Path $_ -Globs $spec.scope[$copyName]) })
+                Set-Content -Path (Join-Path $artefacts 'out-of-scope.txt') -Value ($outOfScope -join "`n")
+
+                $dupAfter = Invoke-Jscpd $dir
+                Copy-Item -Path (Join-Path $dir '.jscpd-report/jscpd-report.json') -Destination (Join-Path $artefacts 'jscpd.json') -ErrorAction SilentlyContinue
+
+                $gateBlocks = 0; $gateBlocksBuild = 0
+                $gateLog = Join-Path $dir '.gate.log'
+                if (Test-Path $gateLog) {
+                    $blockLines = @(Get-Content $gateLog | Where-Object { $_ -match 'exit=2' })
+                    $gateBlocks = $blockLines.Count
+                    $gateBlocksBuild = @($blockLines | Where-Object { $_ -match ' build$' }).Count   # compile errors, not rule violations
+                    Copy-Item -Path $gateLog -Destination (Join-Path $artefacts 'gate.log')
+                }
+
+                $notes = @()
+                if ($agent.exit -ne 0) { $notes += "claude exit $($agent.exit)" }
+                if (-not $m.saw_result) { $notes += 'no result event' }        # transcript stops mid-stream: cost and tokens are unknown, not zero
+                elseif ($m.ended -ne 'success') { $notes += "ended=$($m.ended)" }
+                if ($m.skipped_lines -gt 0) { $notes += "$($m.skipped_lines) unparsable event line$(if ($m.skipped_lines -ne 1) { 's' })" }
+                if ($m.permission_denials -gt 0) { $notes += "$($m.permission_denials) permission denials" }
+                if ($agentCommits -gt 0) { $notes += "agent committed ($agentCommits commits)" }
+                if (-not $archSum.found) { $notes += 'no arch trx (build failed?)' }
+                if (-not $behSum.found) { $notes += 'no behaviour trx (build failed?)' }
+                if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
+
+                $row = New-ResultRow @{
+                    copy = $copyName; task = $spec.id; rep = $rep; model = ($Model ? $Model : 'default')
+                    started_at = ($startedAt.ToString('s') + 'Z'); wall_ms = $agent.wall_ms
+                    cost_usd = $m.cost_usd; num_turns = $m.num_turns; duration_ms = $m.duration_ms; duration_api_ms = $m.duration_api_ms
+                    input_tokens = $m.input_tokens; output_tokens = $m.output_tokens
+                    cache_read_tokens = $m.cache_read_tokens; cache_create_tokens = $m.cache_create_tokens
+                    ended = $m.ended; terminal_reason = $m.terminal_reason; stop_reason = $m.stop_reason
+                    is_error = $m.is_error; permission_denials = $m.permission_denials; skipped_lines = $m.skipped_lines
+                    files_read_distinct = $m.files_read_distinct; read_calls = $m.read_calls; grep_calls = $m.grep_calls; glob_calls = $m.glob_calls
+                    edit_calls = $m.edit_calls; write_calls = $m.write_calls; bash_calls = $m.bash_calls; bash_search_calls = $m.bash_search_calls
+                    gate_blocks = $gateBlocks; gate_blocks_build = $gateBlocksBuild
+                    files_changed = $changed.Count; lines_added = $added; lines_deleted = $deleted; files_out_of_scope = $outOfScope.Count
+                    build_ok = $buildOk
+                    behaviour_tests_passed = $behSum.passed; behaviour_tests_failed = $behSum.failed
+                    arch_tests_passed = $archSum.passed; arch_tests_failed = $archSum.failed
+                    dup_blocks_before = $dupBefore.clones; dup_blocks_after = $dupAfter.clones; dup_lines_pct_after = $dupAfter.percentage
+                    notes = ($notes -join '; ')
+                }
+                $row | Export-Csv -Path $csv -Append -NoTypeInformation
+                $runningTotal += [double]($m.cost_usd ?? 0)
+                Write-Host ("   cost {0}  turns {1}  files_read {2}  changed {3}  out_of_scope {4}  build {5}  behaviour {6}/{7}  arch {8}/{9}  total so far `${10:N2}" -f
+                    (Format-Metric $m.cost_usd '${0:N2}'), (Format-Metric $m.num_turns), $m.files_read_distinct, $changed.Count, $outOfScope.Count, $buildOk,
+                    (Format-Metric $behSum.passed), (Format-Metric $behSum.total), (Format-Metric $archSum.passed), (Format-Metric $archSum.total), $runningTotal)
             }
-            finally { Pop-Location }
-            $arch = Invoke-DotnetTest $dir $archProject 'arch.trx'
-            $beh = Invoke-DotnetTest $dir $behaviourProject[$copyName] 'behaviour.trx'
-            Set-Content -Path (Join-Path $artefacts 'test-output.txt') -Value ($arch.output + "`n`n" + $beh.output)
-            $archSum = Read-TrxSummary -Path $arch.trx
-            $behSum = Read-TrxSummary -Path $beh.trx
-
-            Push-Location $dir
-            try {
-                & git @git add -A
-                $changed = @(& git -c core.quotepath=false diff --cached --name-only)   # keep non-ASCII paths readable
-                $numstat = @(& git diff --cached --numstat)
-                & git diff --cached | Set-Content -Path (Join-Path $artefacts 'diff.patch') -Encoding utf8
+            catch {
+                # One row per repetition, always: a harness failure is recorded where the numbers are, not only on screen.
+                Write-Host "   harness error: $($_.Exception.Message)"
+                New-ResultRow @{
+                    copy = $copyName; task = $spec.id; rep = $rep; model = ($Model ? $Model : 'default')
+                    started_at = ($startedAt.ToString('s') + 'Z'); notes = "harness error: $($_.Exception.Message)"
+                } | Export-Csv -Path $csv -Append -NoTypeInformation
             }
-            finally { Pop-Location }
-            $added = 0; $deleted = 0
-            foreach ($n in $numstat) {
-                $parts = $n -split "`t"
-                if ($parts[0] -match '^\d+$') { $added += [int]$parts[0]; $deleted += [int]$parts[1] }
+            finally {
+                if ($dir -and -not $KeepRuns) { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
             }
-            $outOfScope = @($changed | Where-Object { -not (Test-PathInScope -Path $_ -Globs $spec.scope[$copyName]) })
-            Set-Content -Path (Join-Path $artefacts 'out-of-scope.txt') -Value ($outOfScope -join "`n")
-
-            $dupAfter = Invoke-Jscpd $dir
-            Copy-Item -Path (Join-Path $dir '.jscpd-report/jscpd-report.json') -Destination (Join-Path $artefacts 'jscpd.json') -ErrorAction SilentlyContinue
-
-            $gateBlocks = 0; $gateBlocksBuild = 0
-            $gateLog = Join-Path $dir '.gate.log'
-            if (Test-Path $gateLog) {
-                $blockLines = @(Get-Content $gateLog | Where-Object { $_ -match 'exit=2' })
-                $gateBlocks = $blockLines.Count
-                $gateBlocksBuild = @($blockLines | Where-Object { $_ -match ' build$' }).Count   # compile errors, not rule violations
-                Copy-Item -Path $gateLog -Destination (Join-Path $artefacts 'gate.log')
-            }
-
-            $notes = @()
-            if ($agent.exit -ne 0) { $notes += "claude exit $($agent.exit)" }
-            if (-not $m.saw_result) { $notes += 'no result event' }        # transcript stops mid-stream: cost and tokens are unknown, not zero
-            elseif ($m.ended -ne 'success') { $notes += "ended=$($m.ended)" }
-            if ($m.skipped_lines -gt 0) { $notes += "$($m.skipped_lines) unparsable event lines" }
-            if ($m.permission_denials -gt 0) { $notes += "$($m.permission_denials) permission denials" }
-            if (-not $archSum.found) { $notes += 'no arch trx (build failed?)' }
-            if (-not $behSum.found) { $notes += 'no behaviour trx (build failed?)' }
-            if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
-
-            $row = [pscustomobject][ordered]@{
-                copy = $copyName; task = $spec.id; rep = $rep; model = ($Model ? $Model : 'default')
-                started_at = $startedAt.ToString('s'); wall_ms = $agent.wall_ms
-                cost_usd = $m.cost_usd; num_turns = $m.num_turns; duration_ms = $m.duration_ms; duration_api_ms = $m.duration_api_ms
-                input_tokens = $m.input_tokens; output_tokens = $m.output_tokens
-                cache_read_tokens = $m.cache_read_tokens; cache_create_tokens = $m.cache_create_tokens
-                ended = $m.ended; terminal_reason = $m.terminal_reason; stop_reason = $m.stop_reason
-                is_error = $m.is_error; permission_denials = $m.permission_denials; skipped_lines = $m.skipped_lines
-                files_read_distinct = $m.files_read_distinct; read_calls = $m.read_calls; grep_calls = $m.grep_calls; glob_calls = $m.glob_calls
-                edit_calls = $m.edit_calls; write_calls = $m.write_calls; bash_calls = $m.bash_calls; bash_search_calls = $m.bash_search_calls
-                gate_blocks = $gateBlocks; gate_blocks_build = $gateBlocksBuild
-                files_changed = $changed.Count; lines_added = $added; lines_deleted = $deleted; files_out_of_scope = $outOfScope.Count
-                build_ok = $buildOk
-                behaviour_tests_passed = $behSum.passed; behaviour_tests_failed = $behSum.failed
-                arch_tests_passed = $archSum.passed; arch_tests_failed = $archSum.failed
-                dup_blocks_before = $dupBefore.clones; dup_blocks_after = $dupAfter.clones; dup_lines_pct_after = $dupAfter.percentage
-                notes = ($notes -join '; ')
-            }
-            $row | Export-Csv -Path $csv -Append -NoTypeInformation
-            $runningTotal += [double]($m.cost_usd ?? 0)
-            Write-Host ("   cost `${0:N2}  turns {1}  files_read {2}  changed {3}  out_of_scope {4}  build {5}  behaviour {6}/{7}  arch {8}/{9}  total so far `${10:N2}" -f
-                $m.cost_usd, $m.num_turns, $m.files_read_distinct, $changed.Count, $outOfScope.Count, $buildOk,
-                $behSum.passed, $behSum.total, $archSum.passed, $archSum.total, $runningTotal)
-
-            if (-not $KeepRuns) { Remove-Item -Recurse -Force $dir }
+            # Outside the catch: a runaway total stops the experiment instead of becoming one more row.
+            if ($runningTotal -gt $MaxTotalUsd) { throw "Total cost `$$runningTotal exceeds -MaxTotalUsd `$$MaxTotalUsd; stopping" }
         }
     }
 }
