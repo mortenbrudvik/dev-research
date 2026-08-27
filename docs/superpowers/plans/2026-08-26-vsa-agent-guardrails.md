@@ -1532,7 +1532,7 @@ public class SliceRules
     [Fact]
     public void The_slice_pattern_still_matches_slices() =>
         // A slice rule passes vacuously when its pattern matches nothing; this keeps the rule below honest.
-        Assert.NotEmpty(Api.Types.Where(t => t.Namespace.FullName.StartsWith("Orders.Api.Features.", StringComparison.Ordinal)));
+        Assert.Contains(Api.Types, t => t.Namespace.FullName.StartsWith("Orders.Api.Features.", StringComparison.Ordinal));   // not NotEmpty(...Where(...)): xUnit2030
 
     [Fact]
     public void Slices_do_not_depend_on_each_other() =>
