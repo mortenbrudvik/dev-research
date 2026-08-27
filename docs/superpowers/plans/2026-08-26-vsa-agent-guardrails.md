@@ -3856,9 +3856,13 @@ Prerequisites: `claude` logged in on this machine (`claude --version` prints `2.
 - [ ] **Step 1: Run the smoke test**
 
 Run: `pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1`
-Expected: `== baseline check: sliced`, `== run sliced-T1-1 (Ship an order)`, then a summary line such as `cost $3.12  turns 24  files_read 9  changed 6  out_of_scope 0  build True  behaviour 17/17  arch 8/8  total so far $3.12`, then `Results: ...results/<timestamp>/results.csv`. Open the CSV: one data row with every column filled (`notes` may be empty). Look at `events.jsonl`, `diff.patch` and `gate.log` in the run's artefact folder; the diff should show a new `Features/ShipOrder/` folder and a new test class. If `behaviour_tests_failed` is not 0 or `files_out_of_scope` is not 0, that is a finding, not a harness error — keep it.
+Expected: `== baseline check: sliced`, `== run sliced-T1-1 (Ship an order)`, then a summary line such as `cost $3.12  turns 24  files_read 9  changed 6  out_of_scope 0  build True  behaviour 17/17  arch 10/10  total so far $3.12`, then `Results: ...results/<timestamp>/results.csv`. Open the CSV: one data row with every column filled (`notes` may be empty). Look at `events.jsonl`, `diff.patch` and `gate.log` in the run's artefact folder; the diff should show a new `Features/ShipOrder/` folder and a new test class. If `behaviour_tests_failed` is not 0 or `files_out_of_scope` is not 0, that is a finding, not a harness error — keep it.
 
 If the run ends with `ended=error_max_budget_usd` or `claude exit 1` in `notes`, raise `-MaxBudgetUsd` and repeat once; if it ends with permission denials, inspect `stderr.txt` and `events.jsonl` for the denied tool.
+
+Also read the `result` line of the smoke run's `events.jsonl`: the fixture `experiment/fixtures/sample-events.jsonl` guesses
+`"terminal_reason":"completed"` for a successful run. If the real value differs, put the real one into the fixture and the
+`terminal_reason` assertion in `Test-ParseEvents.ps1` (and their blocks in Task 16), and include that in this task's commit.
 
 - [ ] **Step 2: Keep the row as the committed example**
 
