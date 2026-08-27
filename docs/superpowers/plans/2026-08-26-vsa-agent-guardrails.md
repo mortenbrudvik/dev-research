@@ -3115,7 +3115,7 @@ id: T2
 title: Shipped orders cannot be cancelled
 kind: slice-local
 scope.sliced: src/Orders.Api/Features/CancelOrder/**, src/Orders.Api/Domain/CancellationPolicy.cs, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Application/Orders/Commands/CancelOrder/**, src/Orders.Domain/Policies/CancellationPolicy.cs, tests/Orders.IntegrationTests/**
+scope.layered: src/Orders.Application/Orders/Commands/CancelOrder/**, src/Orders.Domain/Policies/CancellationPolicy.cs, src/Orders.Api/Endpoints/OrdersEndpoints.cs, tests/Orders.IntegrationTests/**
 ---
 Shipped orders can no longer be cancelled.
 
@@ -3148,7 +3148,7 @@ Add tests. Run them before you finish.
 id: T4
 title: Audit trail for every command
 kind: cross-cutting
-scope.sliced: src/Orders.Api/Domain/**, src/Orders.Api/Platform/**, src/Orders.Api/Features/**, src/Orders.Api/Program.cs, tests/Orders.SliceTests/**
+scope.sliced: src/Orders.Api/Domain/**, src/Orders.Api/Platform/**, src/Orders.Api/Features/**, src/Orders.Api/Program.cs, src/Orders.Api/Orders.Api.csproj, tests/Orders.SliceTests/**
 scope.layered: src/Orders.Domain/**, src/Orders.Application/**, src/Orders.Infrastructure/**, src/Orders.Api/Common/**, src/Orders.Api/Endpoints/**, src/Orders.Api/Program.cs, tests/Orders.IntegrationTests/**
 ---
 Record an audit trail for every operation that changes an order — creating and cancelling today, and any operation added later: who (the value of an `X-User` request header, or "anonymous" when absent), what (the operation name), when, and the order id. An entry must be persisted in the same transaction as the change it records.
@@ -3800,7 +3800,7 @@ function Invoke-Agent([string]$dir, [string]$promptFile, [string]$eventsFile, [s
         '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
         '--setting-sources', 'project', '--permission-mode', 'dontAsk',
         '--allowedTools', 'Read,Glob,Grep,Edit,Write,Bash(dotnet *),Bash(git *)',
-        '--disallowedTools', 'Bash(cat *),Bash(head *),Bash(tail *),Bash(sed *),Bash(type *)',
+        '--disallowedTools', 'Bash(cat *),Bash(head *),Bash(tail *),Bash(sed *),Bash(type *),Bash(git show *),Bash(git cat-file *)',
         '--max-budget-usd', "$MaxBudgetUsd"
     )
     if ($Model) { $cliArgs += @('--model', $Model) }
@@ -3816,6 +3816,9 @@ function Invoke-Agent([string]$dir, [string]$promptFile, [string]$eventsFile, [s
 }
 
 $runningTotal = 0.0
+$firstModel = $null
+$dupBefore = @{}
+$dupBeforeJson = @{}
 try {
     foreach ($copyName in $copies) {
         Write-Host "== baseline check: $copyName"
@@ -3826,15 +3829,20 @@ try {
         if (-not ($archBase.ok -and $behBase.ok)) {
             throw "Baseline tests fail for $copyName; aborting.`n$($archBase.output)`n$($behBase.output)"
         }
-        $dupBefore = Invoke-Jscpd $base
+        $dupBefore[$copyName] = Invoke-Jscpd $base
         # Kept in memory because the baseline copy is about to go: every run folder gets its own copy, so
         # dup_blocks_before can be re-derived from a results folder alone.
-        $dupBeforeJson = Get-Content -LiteralPath (Join-Path $base '.jscpd-report/jscpd-report.json') -Raw -ErrorAction SilentlyContinue
+        $dupBeforeJson[$copyName] = Get-Content -LiteralPath (Join-Path $base '.jscpd-report/jscpd-report.json') -Raw -ErrorAction SilentlyContinue
         if (-not $KeepRuns) { Remove-Item -Recurse -Force $base }
+    }
 
-        foreach ($taskFile in $taskFiles) {
-            $spec = Get-TaskSpec -Path $taskFile.FullName
-            for ($rep = 1; $rep -le $Repetitions; $rep++) {
+    # Task, then repetition, then copy: the two arms are interleaved so that anything that drifts over the
+    # hours an experiment takes - a model update, machine load, a warm cache - lands on both copies alike
+    # instead of on whichever one happened to run second.
+    foreach ($taskFile in $taskFiles) {
+        $spec = Get-TaskSpec -Path $taskFile.FullName
+        for ($rep = 1; $rep -le $Repetitions; $rep++) {
+            foreach ($copyName in $copies) {
                 $runName = "$copyName-$($spec.id)-$rep"
                 # Before the run, not only after it: the cap is a spending limit, so the run that would break it is the
                 # one that must not start.
@@ -3845,6 +3853,7 @@ try {
                 $startedAt = (Get-Date).ToUniversalTime()
                 $dir = $null
                 $keepThisRun = $false
+                $rowModel = $null       # set only by a measured row, so a failed run cannot look like drift
                 try {
                     $run = New-RunDirectory $copyName $runName
                     $dir = $run.dir
@@ -3875,7 +3884,7 @@ try {
                     # can be re-derived from the results folder after the run directory is gone.
                     New-Item -ItemType Directory -Force -Path (Join-Path $artefacts 'trx') | Out-Null
                     Copy-Item -Path (Join-Path $dir '.trx/*.trx') -Destination (Join-Path $artefacts 'trx') -ErrorAction SilentlyContinue
-                    if ($dupBeforeJson) { Set-Content -Path (Join-Path $artefacts 'jscpd-before.json') -Value $dupBeforeJson -Encoding utf8 }
+                    if ($dupBeforeJson[$copyName]) { Set-Content -Path (Join-Path $artefacts 'jscpd-before.json') -Value $dupBeforeJson[$copyName] -Encoding utf8 }
 
                     Push-Location $dir
                     try {
@@ -3919,8 +3928,9 @@ try {
                     if ($agentCommits -gt 0) { $notes += "agent committed ($agentCommits commit$(if ($agentCommits -ne 1) { 's' }))" }
                     if (-not $archSum.found) { $notes += 'no arch trx (build failed?)' }
                     if (-not $behSum.found) { $notes += 'no behaviour trx (build failed?)' }
-                    if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
+                    if ($dupBefore[$copyName].sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
 
+                    $rowModel = $m.model
                     $row = New-ResultRow @{
                         # What ran, not what was asked for: the init event names the model the CLI chose, and
                         # modelUsage names everything it billed. -Model is only the fallback, 'default' the last one.
@@ -3939,7 +3949,7 @@ try {
                         build_ok = $buildOk
                         behaviour_tests_passed = $behSum.passed; behaviour_tests_failed = $behSum.failed
                         arch_tests_passed = $archSum.passed; arch_tests_failed = $archSum.failed
-                        dup_blocks_before = $dupBefore.clones; dup_blocks_after = $dupAfter.clones; dup_lines_pct_after = $dupAfter.percentage
+                        dup_blocks_before = $dupBefore[$copyName].clones; dup_blocks_after = $dupAfter.clones; dup_lines_pct_after = $dupAfter.percentage
                         notes = ($notes -join '; ')
                     }
                     $row | Export-Csv -Path $csv -Append -NoTypeInformation
@@ -3964,6 +3974,14 @@ try {
                 }
                 # Outside the catch: a runaway total stops the experiment instead of becoming one more row.
                 if ($runningTotal -gt $MaxTotalUsd) { throw "Total cost `$$runningTotal exceeds -MaxTotalUsd `$$MaxTotalUsd; stopping" }
+                # Comparing two arms only means something while the model stays the same. The row is already
+                # written; what follows it would be a different experiment, so stop instead of mixing them.
+                if ($rowModel) {
+                    if ($null -eq $firstModel) { $firstModel = $rowModel }
+                    elseif ($rowModel -ne $firstModel -and -not $Model) {
+                        throw "primary model changed from $firstModel to $rowModel; stopping - pass -Model to pin it"
+                    }
+                }
             }
         }
     }
@@ -3998,9 +4016,10 @@ exit /b %ERRORLEVEL%
 # Stand-in for `claude -p --output-format stream-json --verbose`, used to exercise run.ps1 end to end for
 # free. Like the real CLI it runs in the run directory, reads the prompt from stdin, changes the working
 # tree and prints a transcript on stdout. Works in either copy: the behaviour test project decides the
-# in-scope file. Two environment toggles let the runner's own verification steps reach its failure paths:
+# in-scope file. Three environment toggles let the runner's own verification steps reach its failure paths:
 #   VSA_STUB_COMMIT=1  commit the change, so the runner must measure against the baseline commit, not HEAD
 #   VSA_STUB_FAIL=1    print nothing at all and exit 3, so the runner must survive a missing transcript
+#   VSA_STUB_MODEL=a,b the init event's model, picked by repetition, so the model-drift stop can be tried
 $ErrorActionPreference = 'Stop'
 $prompt = [Console]::In.ReadToEnd()
 [Console]::Error.WriteLine("stub: $($prompt.Length) prompt characters, cwd $($PWD.Path)")
@@ -4021,6 +4040,16 @@ if ($env:VSA_STUB_COMMIT -eq '1') {
     & git -c user.name=stub -c user.email=stub@example.invalid commit -q -m 'stub commit' 2>&1 | Out-Null
 }
 
+# The model the init event announces. A comma-separated VSA_STUB_MODEL picks by repetition - the run
+# directory is <copy>-<task>-<rep> - so two repetitions can report two different models.
+$initModel = 'stub-model'
+if ($env:VSA_STUB_MODEL) {
+    $choices = @($env:VSA_STUB_MODEL -split ',')
+    $rep = 1
+    if ((Split-Path -Leaf $PWD.Path) -match '-(\d+)$') { $rep = [int]$Matches[1] }
+    $initModel = $choices[[Math]::Min($rep, $choices.Count) - 1]
+}
+
 $toolUse = @(
     '{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"src/Orders.Api/Program.cs"}}'
     '{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"CLAUDE.md"}}'
@@ -4033,7 +4062,7 @@ $toolUse = @(
     '{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"ls src"}}'
 ) -join ','
 $transcript = @(
-    '{"type":"system","subtype":"init","cwd":".","model":"stub-model"}'
+    '{"type":"system","subtype":"init","cwd":".","model":"' + $initModel + '"}'
     '{"type":"assistant","message":{"content":[' + $toolUse + ']}}'
     'a line that is not JSON, so that skipped_lines is exercised too'
     '{"type":"result","subtype":"success","total_cost_usd":0.1234,"num_turns":7,"duration_ms":12345,' +
@@ -4077,16 +4106,21 @@ pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy bot
   -ResultsDir "$TEMP/vsa-stub-results" -KeepRuns
 ```
 
-Expected (a few minutes; the baseline check builds and tests each copy before the run):
+Expected (a few minutes; both copies are built and tested before any run):
 
 ```
 == baseline check: sliced
+== baseline check: layered
 == run sliced-T1-1 (Ship an order)
    cost $0.12  turns 7  files_read 2  changed 2  out_of_scope 1  build True  behaviour 14/14  arch 10/10  total so far $0.12
-== baseline check: layered
 == run layered-T1-1 (Ship an order)
    cost $0.12  turns 7  files_read 2  changed 2  out_of_scope 1  build True  behaviour 14/14  arch 9/9  total so far $0.25
 ```
+
+Both baseline checks come first, then the runs interleave the arms: task, then repetition, then copy. With
+`-Task T1,T2 -Repetitions 2` the order is `sliced-T1-1, layered-T1-1, sliced-T1-2, layered-T1-2, sliced-T2-1, layered-T2-1,
+sliced-T2-2, layered-T2-2` — worth running once, because a full experiment takes hours and anything that drifts in that time
+must not land on one arm only.
 
 Both CSV rows must have 44 columns with `gate_blocks` 2, `gate_blocks_build` 1, `files_changed` 2, `lines_added` 2,
 `files_out_of_scope` 1, `build_ok` True, `model` `stub-model` (from the stub's init event, which is where the CLI names the model
@@ -4120,7 +4154,7 @@ same way and written as a row whose `notes` start with `harness error:`, so one 
 that run's copy is then kept whatever `-KeepRuns` says and its path printed as `Run directory kept for diagnosis: …`, because
 it is the only evidence of what went wrong.
 
-- [ ] **Step 7: Check the cost guards**
+- [ ] **Step 7: Check the cost guards and the model-drift stop**
 
 ```bash
 pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 2 -Yes -MaxBudgetUsd 0.05 -MaxTotalUsd 0.05 \
@@ -4137,6 +4171,19 @@ empty results folder and exit 1 — with the default `-MaxBudgetUsd 8` the very 
 a cap that only fires after the money is spent is not a cap. Without `-Yes`, any run of more than one repetition first prints
 `About to make 2 agent runs: worst case $16.00 at -MaxBudgetUsd $8.00 each, capped at -MaxTotalUsd $200.00.` and waits for a
 typed `y`.
+
+Then the drift stop, with the stub reporting a different model in each repetition:
+
+```bash
+VSA_STUB_MODEL=stub-model-a,stub-model-b pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 \
+  -Copy sliced -Task T1 -Repetitions 2 -Yes \
+  -ClaudeCommand prototypes/ai-development/vsa-agent-guardrails/experiment/stub/claude.cmd -ResultsDir "$TEMP/vsa-stub-drift"
+```
+
+Expected: two rows are written — the second one is kept, because drift is a fact about the experiment and not a failed run —
+then `primary model changed from stub-model-a to stub-model-b; stopping - pass -Model to pin it` and exit 1. Comparing the two
+arms only means something while the model stays the same, so a real experiment should pin it: `-Model claude-opus-5[1m]`. With
+`-Model` given the check does not fire, because the CLI is then pinned to what was asked for.
 
 Delete the scratch results folders and `%TEMP%\vsa-runs` afterwards.
 
@@ -4486,12 +4533,13 @@ Requires PowerShell 7, Node 22 (`npx jscpd@4`), Git, Git Bash (the hooks are `sh
     pwsh experiment/Test-Parity.ps1                                       # both copies answer identically, free
     pwsh experiment/run.ps1 -Task T1 -Repetitions 1 -Yes -ClaudeCommand experiment/stub/claude.cmd   # the harness itself, free
     pwsh experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1          # smoke run, one paid agent run (~$1)
-    pwsh experiment/run.ps1 -Yes                                          # both copies, five tasks, 3 repetitions (~$20–40)
+    pwsh experiment/run.ps1 -Yes -Model claude-opus-5[1m]                 # both copies, five tasks, 3 repetitions (~$20–40)
 
 Options: `-Copy sliced|layered|both`, `-Task T1[,T3]` (an unknown id fails before anything is copied or spent), `-Repetitions n`,
 `-MaxBudgetUsd` (default 8; the per-run cap handed to `claude` itself), `-MaxTotalUsd` (default 200; stops the experiment as soon
-as the rows add up past it), `-Model` (default: whatever the CLI picks — either way the `model` column records the model the run
-actually started with, read from the transcript's init event, and `models_billed` every model it was billed for),
+as the rows add up past it), `-Model` (default: whatever the CLI picks; pin it for a real experiment, because the runner stops if
+the primary model changes between rows — either way the `model` column records the model the run actually started with, read from
+the transcript's init event, and `models_billed` every model it was billed for),
 `-ResultsDir`, `-KeepRuns` (leave the temporary copies behind for inspection), `-Yes` (skip the typed confirmation — required
 when more than one run is planned, that is copies × tasks × repetitions, so also for the stub line above) and `-ClaudeCommand`
 (which CLI to drive; `experiment/stub/claude.cmd` exercises the whole harness for nothing and is how to check a change to
