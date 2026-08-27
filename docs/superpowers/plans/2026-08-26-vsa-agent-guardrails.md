@@ -538,7 +538,7 @@ git commit -m "vsa-agent-guardrails(sliced): platform, first migration"
 ### Task 4: Slice tests project, fixture, and the CreateOrder slice (sliced)
 
 **Files:**
-- Create: `P/sliced/tests/Orders.SliceTests/Orders.SliceTests.csproj`, `ApiFixture.cs`, `CreateOrderTests.cs`
+- Create: `P/sliced/tests/Orders.SliceTests/Orders.SliceTests.csproj`, `ApiFixture.cs`, `HttpAssertions.cs`, `CreateOrderTests.cs`
 - Create: `P/sliced/src/Orders.Api/Features/CreateOrder/CreateOrderRequest.cs`, `CreateOrderResponse.cs`, `CreateOrderValidator.cs`, `CreateOrderHandler.cs`, `CreateOrderEndpoint.cs`
 
 - [ ] **Step 1: Create the test project**
@@ -665,7 +665,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
 
 - [ ] **Step 3: Write the assertion helper and the failing CreateOrder tests**
 
-`tests/Orders.SliceTests/HttpAssertions.cs` — on a status mismatch the failure message carries the response body, so a 500 says why (the platform puts the exception message in the ProblemDetails `detail` outside Production):
+`tests/Orders.SliceTests/HttpAssertions.cs` — on a status mismatch the failure message carries the response body, so a 500 says why (the platform puts the exception message in the ProblemDetails `detail` in Development and Testing):
 
 ```csharp
 namespace Orders.SliceTests;
@@ -2399,7 +2399,7 @@ git commit -m "vsa-agent-guardrails(layered): infrastructure, api, first migrati
 ### Task 13: Integration tests — the same cases as the slice tests (layered)
 
 **Files:**
-- Create: `P/layered/tests/Orders.IntegrationTests/Orders.IntegrationTests.csproj`, `ApiFixture.cs`, `CreateOrderTests.cs`, `GetOrderTests.cs`, `CancelOrderTests.cs`, `ListOrdersTests.cs`
+- Create: `P/layered/tests/Orders.IntegrationTests/Orders.IntegrationTests.csproj`, `ApiFixture.cs`, `HttpAssertions.cs`, `CreateOrderTests.cs`, `GetOrderTests.cs`, `CancelOrderTests.cs`, `ListOrdersTests.cs`
 
 - [ ] **Step 1: Create the project**
 
