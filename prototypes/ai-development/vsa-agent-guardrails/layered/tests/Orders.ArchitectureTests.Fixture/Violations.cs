@@ -22,3 +22,19 @@ namespace Fixture.Infrastructure
         public string Save(object value) => value.ToString() ?? "";
     }
 }
+
+namespace Fixture.Api
+{
+    public sealed class Handler
+    {
+        public string Run() => new Fixture.Infrastructure.Persistence.Store().Save("");   // api reaches into persistence
+    }
+}
+
+namespace Fixture.Infrastructure.Persistence
+{
+    public sealed class Store
+    {
+        public string Save(object value) => value.ToString() ?? "";
+    }
+}

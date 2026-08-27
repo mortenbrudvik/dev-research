@@ -34,4 +34,14 @@ public class NegativeControl
         var error = Assert.Throws<FailedArchRuleException>(() => rule.Check(FixtureArchitecture));
         Assert.Contains("Fixture.Application.Formatter", error.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Api_rule_fails_when_api_uses_persistence()
+    {
+        var rule = Types().That().ResideInNamespaceMatching(@"^Fixture\.Api")
+            .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Fixture\.Infrastructure\.Persistence"));
+
+        var error = Assert.Throws<FailedArchRuleException>(() => rule.Check(FixtureArchitecture));
+        Assert.Contains("Fixture.Api.Handler", error.Message, StringComparison.Ordinal);
+    }
 }
