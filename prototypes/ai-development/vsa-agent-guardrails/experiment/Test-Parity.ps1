@@ -16,10 +16,13 @@ function Start-Api([string]$copyName, [int]$port) {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $proc = [System.Diagnostics.Process]::Start($psi)
+    # Drain both pipes in the background: a child that fills a redirected pipe blocks on its next write.
+    [void]$proc.StandardOutput.ReadToEndAsync()
+    $stderr = $proc.StandardError.ReadToEndAsync()
     $deadline = (Get-Date).AddSeconds(120)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
-        if ($proc.HasExited) { throw "$copyName exited early:`n$($proc.StandardError.ReadToEnd())" }
+        if ($proc.HasExited) { throw "$copyName exited early:`n$($stderr.Result)" }
         try {
             $r = Invoke-WebRequest -Uri "http://localhost:$port/orders" -SkipHttpErrorCheck -TimeoutSec 2
             if ($r.StatusCode -eq 200) { return [pscustomobject]@{ proc = $proc; db = $db } }
@@ -113,7 +116,9 @@ try {
             $la = $ta[$file] -split "`n"; $lb = $tb[$file] -split "`n"
             $n = 0
             while ($n -lt $la.Count -and $n -lt $lb.Count -and $la[$n] -eq $lb[$n]) { $n++ }
-            Write-Host "DIFF tests $file at normalized line $($n + 1)`n  sliced:  $($la[$n])`n  layered: $($lb[$n])"
+            $lineA = if ($n -lt $la.Count) { $la[$n] } else { '<end of file>' }
+            $lineB = if ($n -lt $lb.Count) { $lb[$n] } else { '<end of file>' }
+            Write-Host "DIFF tests $file at normalized line $($n + 1)`n  sliced:  $lineA`n  layered: $lineB"
         }
         else {
             $count = [regex]::Matches($ta[$file], 'public async Task \w+\(').Count

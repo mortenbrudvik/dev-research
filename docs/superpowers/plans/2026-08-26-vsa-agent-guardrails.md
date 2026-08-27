@@ -4247,10 +4247,13 @@ function Start-Api([string]$copyName, [int]$port) {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $proc = [System.Diagnostics.Process]::Start($psi)
+    # Drain both pipes in the background: a child that fills a redirected pipe blocks on its next write.
+    [void]$proc.StandardOutput.ReadToEndAsync()
+    $stderr = $proc.StandardError.ReadToEndAsync()
     $deadline = (Get-Date).AddSeconds(120)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
-        if ($proc.HasExited) { throw "$copyName exited early:`n$($proc.StandardError.ReadToEnd())" }
+        if ($proc.HasExited) { throw "$copyName exited early:`n$($stderr.Result)" }
         try {
             $r = Invoke-WebRequest -Uri "http://localhost:$port/orders" -SkipHttpErrorCheck -TimeoutSec 2
             if ($r.StatusCode -eq 200) { return [pscustomobject]@{ proc = $proc; db = $db } }
@@ -4263,7 +4266,11 @@ function Start-Api([string]$copyName, [int]$port) {
 function Invoke-Scenario([int]$port) {
     $base = "http://localhost:$port"
     $steps = [System.Collections.Generic.List[object]]::new()
-    $record = { param($name, $r) $steps.Add([pscustomobject]@{ step = $name; status = $r.StatusCode; body = $r.Content }) }
+    # Invoke-WebRequest only decodes Content to a string for media types it knows are text;
+    # application/problem+json is not on that list, so every 400/409 body arrives as byte[].
+    $record = { param($name, $r)
+        $body = if ($r.Content -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($r.Content) } else { $r.Content }
+        $steps.Add([pscustomobject]@{ step = $name; status = $r.StatusCode; body = $body }) }
 
     $created = Invoke-WebRequest -Uri "$base/orders" -Method Post -ContentType 'application/json' -SkipHttpErrorCheck `
         -Body '{"customerId":"c1","lines":[{"sku":"S1","quantity":2,"unitPrice":9.5}]}'
@@ -4340,7 +4347,9 @@ try {
             $la = $ta[$file] -split "`n"; $lb = $tb[$file] -split "`n"
             $n = 0
             while ($n -lt $la.Count -and $n -lt $lb.Count -and $la[$n] -eq $lb[$n]) { $n++ }
-            Write-Host "DIFF tests $file at normalized line $($n + 1)`n  sliced:  $($la[$n])`n  layered: $($lb[$n])"
+            $lineA = if ($n -lt $la.Count) { $la[$n] } else { '<end of file>' }
+            $lineB = if ($n -lt $lb.Count) { $lb[$n] } else { '<end of file>' }
+            Write-Host "DIFF tests $file at normalized line $($n + 1)`n  sliced:  $lineA`n  layered: $lineB"
         }
         else {
             $count = [regex]::Matches($ta[$file], 'public async Task \w+\(').Count
@@ -4352,7 +4361,7 @@ finally {
     foreach ($api in @($sliced, $layered)) {
         if ($null -ne $api) {
             if (-not $api.proc.HasExited) { $api.proc.Kill($true) }
-            Remove-Item -Path $api.db -ErrorAction SilentlyContinue
+            Remove-Item -Path "$($api.db)*" -ErrorAction SilentlyContinue   # the .db plus SQLite's -wal/-shm sidecars
         }
     }
 }
