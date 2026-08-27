@@ -1340,7 +1340,7 @@ git commit -m "vsa-agent-guardrails(sliced): ListOrders slice"
 
 **Files:**
 - Create: `P/sliced/tests/Orders.ArchitectureTests.Fixture/Orders.ArchitectureTests.Fixture.csproj`, `Violations.cs`
-- Create: `P/sliced/tests/Orders.ArchitectureTests/Orders.ArchitectureTests.csproj`, `SliceRules.cs`, `NegativeControl.cs`
+- Create: `P/sliced/tests/Orders.ArchitectureTests/Orders.ArchitectureTests.csproj`, `SliceRules.cs`, `NegativeControl.cs`, `CompositionRoot.cs`
 
 The fixture is a tiny class library whose only purpose is to contain a deliberate cross-slice dependency, so the tests can prove the rule fails when it should (spec §4.4).
 
@@ -1573,6 +1573,66 @@ public class SliceRules
 Run: `dotnet test tests/Orders.ArchitectureTests --nologo`
 Expected: `Passed! ... Passed: 8, Total: 8` (three negative controls, five rules).
 
+- [ ] **Step 6: Composition-root test**
+
+ArchUnitNET drops the `<Main>$` method and the closure types that top-level statements compile into, so nothing in
+`Program.cs` is visible to the slice rules. This text-level test keeps `Program.cs` a composition root (service
+registration and `app.MapEndpoints()`; no routes). It is byte-identical in both copies.
+
+`tests/Orders.ArchitectureTests/CompositionRoot.cs`:
+
+```csharp
+using System.Text.RegularExpressions;
+
+namespace Orders.ArchitectureTests;
+
+/// <summary>
+/// Program.cs is a composition root: it registers services and calls the Map*Endpoints() extensions; it defines no
+/// routes. ArchUnitNET cannot enforce that — top-level statements compile into a <Main>$ method and closure types
+/// that it drops from the architecture — so this test reads the source file instead. The pattern is checked against
+/// a known route first so that a rotted pattern cannot pass vacuously.
+/// </summary>
+public class CompositionRoot
+{
+    private static readonly Regex RouteRegistration =
+        new(@"\.Map(Get|Post|Put|Patch|Delete|Methods|Group|Fallback)\s*\(", RegexOptions.Compiled);
+
+    [Fact]
+    public void The_route_pattern_still_matches_a_route() =>
+        Assert.Matches(RouteRegistration, "app.MapGet(\"/orders\", () => Results.Ok());");
+
+    [Fact]
+    public void Program_cs_registers_no_routes()
+    {
+        var source = File.ReadAllText(ProgramCsPath());
+
+        var routes = RouteRegistration.Matches(source).Select(m => m.Value).ToList();
+
+        Assert.Empty(routes);
+    }
+
+    private static string ProgramCsPath()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Orders.sln")))
+        {
+            dir = dir.Parent;
+        }
+
+        if (dir is null)
+        {
+            throw new InvalidOperationException($"No Orders.sln above {AppContext.BaseDirectory}");
+        }
+
+        return Path.Combine(dir.FullName, "src", "Orders.Api", "Program.cs");
+    }
+}
+```
+
+Run: `dotnet test tests/Orders.ArchitectureTests --nologo`
+Expected: `Passed! ... Passed: 10, Total: 10`. Then add `app.MapGet("/ping", () => "pong");` to `src/Orders.Api/Program.cs`,
+run again — `Program_cs_registers_no_routes` fails listing `.MapGet(` — and restore the file (`git checkout -- src/Orders.Api/Program.cs`).
+
 - [ ] **Step 7: Prove the slice rule bites on the real code, then revert**
 
 Temporarily add to `src/Orders.Api/Features/GetOrder/GetOrderHandler.cs` a field `private readonly Orders.Api.Features.CreateOrder.CreateOrderResponse? _leak;` (with `#pragma warning disable CS0169, CS0649` on the line above it, because warnings are errors), run `dotnet test tests/Orders.ArchitectureTests --nologo`.
@@ -1624,6 +1684,8 @@ git commit -m "vsa-agent-guardrails(sliced): architecture tests with negative co
 - Handlers are discovered by name (`*Handler` under `Features`) and endpoints by `IEndpoint`; nothing is
   registered in `Program.cs` per slice. An endpoint class needs a public parameterless constructor — take
   dependencies as parameters of the route delegate, not of the class.
+- `Program.cs` is the composition root: service registration and `app.MapEndpoints()` only. Do not add routes
+  there — an architecture test reads the file and fails on any `MapGet`/`MapPost`/... call in it.
 - An endpoint that binds a request body adds `.AddEndpointFilter<ValidationFilter<TRequest>>()`, which requires
   a public `<Request>Validator` (`AbstractValidator<TRequest>`) in the slice; the filter throws if none is registered.
 - Every slice ships with a test class in `tests/Orders.SliceTests/<UseCase>Tests.cs` that sends the request
@@ -2658,7 +2720,7 @@ git commit -m "vsa-agent-guardrails(layered): integration tests mirroring the sl
 ### Task 14: Architecture tests and guardrail files (layered)
 
 **Files:**
-- Create: `P/layered/tests/Orders.ArchitectureTests.Fixture/{Orders.ArchitectureTests.Fixture.csproj,Violations.cs}`, `P/layered/tests/Orders.ArchitectureTests/{Orders.ArchitectureTests.csproj,LayerRules.cs,NegativeControl.cs}`
+- Create: `P/layered/tests/Orders.ArchitectureTests.Fixture/{Orders.ArchitectureTests.Fixture.csproj,Violations.cs}`, `P/layered/tests/Orders.ArchitectureTests/{Orders.ArchitectureTests.csproj,LayerRules.cs,NegativeControl.cs,CompositionRoot.cs}`
 - Create: `P/layered/CLAUDE.md`, `.claude/settings.json`, `.claude/hooks/gate.sh`, `.jscpd.json`
 
 - [ ] **Step 1: Projects**
@@ -2707,6 +2769,22 @@ namespace Fixture.Infrastructure
         public string Save(object value) => value.ToString() ?? "";
     }
 }
+
+namespace Fixture.Api
+{
+    public sealed class Handler
+    {
+        public string Run() => new Fixture.Infrastructure.Persistence.Store().Save("");   // api reaches into persistence
+    }
+}
+
+namespace Fixture.Infrastructure.Persistence
+{
+    public sealed class Store
+    {
+        public string Save(object value) => value.ToString() ?? "";
+    }
+}
 ```
 
 - [ ] **Step 3: Negative control**
@@ -2750,10 +2828,20 @@ public class NegativeControl
         var error = Assert.Throws<FailedArchRuleException>(() => rule.Check(FixtureArchitecture));
         Assert.Contains("Fixture.Application.Formatter", error.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Api_rule_fails_when_api_uses_persistence()
+    {
+        var rule = Types().That().ResideInNamespaceMatching(@"^Fixture\.Api")
+            .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Fixture\.Infrastructure\.Persistence"));
+
+        var error = Assert.Throws<FailedArchRuleException>(() => rule.Check(FixtureArchitecture));
+        Assert.Contains("Fixture.Api.Handler", error.Message, StringComparison.Ordinal);
+    }
 }
 ```
 
-Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed: 2`.
+Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed: 3`.
 
 - [ ] **Step 4: The real rules**
 
@@ -2767,6 +2855,12 @@ using static ArchUnitNET.Fluent.ArchRuleDefinition;
 
 namespace Orders.ArchitectureTests;
 
+/// <summary>
+/// Both sides of every rule are deny-lists, so an unbounded prefix such as ^Orders\.Domain can only over-match (a
+/// hypothetical Orders.DomainServices would be held to the Domain rule); no (\.|$) bound is needed here, unlike the
+/// sliced copy's allow-list rule. Program.cs is outside every rule: ArchUnitNET drops the <Main>$ method and the
+/// closure types that top-level statements compile into, which is why CompositionRoot reads that file as text.
+/// </summary>
 public class LayerRules
 {
     private static readonly Architecture Layers = new ArchLoader().LoadAssemblies(
@@ -2787,17 +2881,77 @@ public class LayerRules
             .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Orders\.(Infrastructure|Api)"))
             .Check(Layers);
 
+    // The API talks to handlers, never to the database: neither the concrete DbContext nor the IOrdersDbContext
+    // abstraction (which exists for the Application layer) may be referenced from Orders.Api.
     [Fact]
     public void Api_does_not_use_persistence_directly() =>
         Types().That().ResideInNamespaceMatching(@"^Orders\.Api")
-            .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Orders\.Infrastructure\.Persistence"))
+            .Should().NotDependOnAny(Types().That().ResideInNamespaceMatching(@"^Orders\.Infrastructure\.Persistence")
+                .Or().HaveFullNameMatching(@"^Orders\.Application\.Common\.Interfaces\.IOrdersDbContext$"))
             .Check(Layers);
 }
 ```
 
-(`Program` has no namespace, so the composition root's `Migrate()` call is outside the third rule on purpose.)
+`Program.cs` is invisible to these rules (see the class summary); its `MigrateAsync()` call is therefore not a
+violation, and its routes-free state is guarded by the next step.
 
-Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed: 5`.
+Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed: 6`.
+
+- [ ] **Step 4b: Composition-root test — byte-identical to the sliced copy's**
+
+`tests/Orders.ArchitectureTests/CompositionRoot.cs`:
+
+```csharp
+using System.Text.RegularExpressions;
+
+namespace Orders.ArchitectureTests;
+
+/// <summary>
+/// Program.cs is a composition root: it registers services and calls the Map*Endpoints() extensions; it defines no
+/// routes. ArchUnitNET cannot enforce that — top-level statements compile into a <Main>$ method and closure types
+/// that it drops from the architecture — so this test reads the source file instead. The pattern is checked against
+/// a known route first so that a rotted pattern cannot pass vacuously.
+/// </summary>
+public class CompositionRoot
+{
+    private static readonly Regex RouteRegistration =
+        new(@"\.Map(Get|Post|Put|Patch|Delete|Methods|Group|Fallback)\s*\(", RegexOptions.Compiled);
+
+    [Fact]
+    public void The_route_pattern_still_matches_a_route() =>
+        Assert.Matches(RouteRegistration, "app.MapGet(\"/orders\", () => Results.Ok());");
+
+    [Fact]
+    public void Program_cs_registers_no_routes()
+    {
+        var source = File.ReadAllText(ProgramCsPath());
+
+        var routes = RouteRegistration.Matches(source).Select(m => m.Value).ToList();
+
+        Assert.Empty(routes);
+    }
+
+    private static string ProgramCsPath()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Orders.sln")))
+        {
+            dir = dir.Parent;
+        }
+
+        if (dir is null)
+        {
+            throw new InvalidOperationException($"No Orders.sln above {AppContext.BaseDirectory}");
+        }
+
+        return Path.Combine(dir.FullName, "src", "Orders.Api", "Program.cs");
+    }
+}
+```
+
+Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed: 8`. Then add
+`app.MapGet("/ping", () => "pong");` to `src/Orders.Api/Program.cs`, run again — `Program_cs_registers_no_routes`
+fails listing `.MapGet(` — and restore the file (`git checkout -- src/Orders.Api/Program.cs`).
 
 - [ ] **Step 5: Guardrail files**
 
@@ -2823,15 +2977,20 @@ Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed
   `IOrdersDbContext` abstraction in `Common/Interfaces/`. Register every handler in `DependencyInjection.cs`.
   `Orders/Commands/CreateOrder/` is the reference for a command with a body, `Orders/Commands/CancelOrder/` for one
   whose only input is the route id, `Orders/Queries/GetOrder/` for a query: copy the shape, not the logic. Depends on
-  Domain only. An endpoint that binds a request body adds `.AddEndpointFilter<ValidationFilter<TCommand>>()`, which
-  requires a public `<Command>Validator` in the command's folder; the filter throws if none is registered.
+  Domain and framework packages only.
 - `src/Orders.Infrastructure`: `OrdersDbContext`, migrations, `DependencyInjection.cs`. Depends on Application and Domain.
 - `src/Orders.Api`: the `/orders` routes live in `Endpoints/OrdersEndpoints.cs`; a route outside `/orders` gets its
   own `Endpoints/<Name>Endpoints.cs` with a `Map<Name>Endpoints` extension called from `Program.cs`. HTTP concerns
-  in `Common/`. Never reference `Orders.Infrastructure.Persistence` from the API; the composition root in
-  `Program.cs` is the only exception.
+  in `Common/`. Endpoints call handlers; never reference `Orders.Infrastructure.Persistence` or `IOrdersDbContext`
+  from the API — the composition root in `Program.cs` is the only exception, and it stays a composition root:
+  service registration and `Map<Name>Endpoints()` calls only. An architecture test reads the file and fails on
+  any `MapGet`/`MapPost`/... call in it.
+- An endpoint that binds a request body adds `.AddEndpointFilter<ValidationFilter<TCommand>>()`
+  (`src/Orders.Api/Common/`), which requires a public `<Command>Validator` (`AbstractValidator<TCommand>`) in the
+  command's folder; the filter throws if none is registered.
 - Every command or query ships with a test class in `tests/Orders.IntegrationTests/<UseCase>Tests.cs` that sends the
-  request through the endpoint and asserts the response and the persisted state. Use `ApiFixture`; do not mock the database.
+  request through the endpoint and asserts the response and the persisted state. Use `ApiFixture` and
+  `await response.ShouldBe(HttpStatusCode.X)`; do not mock the database.
 - Domain rule violations surface as HTTP 409 (`DomainException` or an explicit conflict result); validation failures as 400.
 
 ## Scope
@@ -3573,6 +3732,15 @@ the harness denies `cat`/`head`/`tail`/`sed` so file reads are countable, which 
 Limits of the architecture rules as an instrument: ArchUnitNET treats a sub-namespace inside a slice as a separate slice (the sliced
 `CLAUDE.md` says so), and a slice rule passes vacuously when its pattern matches nothing (guarded by a presence test).
 Gate blocks: `gate_blocks_build` are compile errors on a half-written change, not rule violations; only the remainder are guardrail catches.
+The gate sees types and delegate signatures, not lambda bodies: a route delegate that resolves a forbidden type from `IServiceProvider`
+inside its body passes the rules in both copies. `Program.cs` is invisible to ArchUnitNET (top-level statements) and is guarded only by
+the `CompositionRoot` text test, which forbids route registrations there.
+Mechanical coverage of the likely wrong moves is asymmetric by design — the sliced rules fire on any cross-slice reuse and on shared code
+under `Features/`, the layered rules only on Domain→up, Application→down and Api→persistence — and that asymmetry is part of what the
+experiment measures. The layered copy's likeliest shortcut, querying through `IOrdersDbContext` from an endpoint, is caught by a rule
+widened for fairness, not by the architecture.
+On T3 the sliced rules steer the agent to duplicate the order summary in the new slice while the layered scope sanctions sharing
+`OrderDtos.cs`, so a jscpd delta on T3 measures each architecture's sanctioned answer, not agent sloppiness.
 Wall time is not comparable across copies: the layered gate builds four projects per invocation, the sliced gate two.
 
 ## Raw data
@@ -3817,7 +3985,7 @@ pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/Test-ParseEvents.
 git status --short
 ```
 
-Expected: both `dotnet test` runs report `Passed!` for every project (14 behaviour tests in each copy; 8 architecture tests in `sliced/`, 5 in `layered/`); `Test-ParseEvents: all assertions passed`; `0` warnings from the strict site build (the prototype is outside `docs/`); `git status` shows only the untracked/modified files of this task.
+Expected: both `dotnet test` runs report `Passed!` for every project (14 behaviour tests in each copy; 10 architecture tests in `sliced/`, 8 in `layered/`); `Test-ParseEvents: all assertions passed`; `0` warnings from the strict site build (the prototype is outside `docs/`); `git status` shows only the untracked/modified files of this task.
 
 - [ ] **Step 3: Commit**
 

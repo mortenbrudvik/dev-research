@@ -77,7 +77,7 @@ prototypes/ai-development/vsa-agent-guardrails/
 │   ├── src/Orders.Api/             Endpoints/OrdersEndpoints.cs (all routes in one file), Program.cs
 │   └── tests/
 │       ├── Orders.IntegrationTests/   the same HTTP-level test cases as Orders.SliceTests, file for file
-│       └── Orders.ArchitectureTests/  ArchUnitNET: Domain depends on nothing in the app; Application does not depend on Infrastructure or Api; Api does not depend on Infrastructure internals except through DependencyInjection
+│       └── Orders.ArchitectureTests/  ArchUnitNET: Domain depends on nothing in the app; Application does not depend on Infrastructure or Api; Api does not depend on Infrastructure internals (or on IOrdersDbContext) except through DependencyInjection; a text test keeps Program.cs free of routes
 └── experiment/
     ├── tasks/
     │   ├── T1-ship-order.md … T5-order-notes.md    front matter: id, title, expected scope per copy (glob lists); body: the prompt, identical for both copies
