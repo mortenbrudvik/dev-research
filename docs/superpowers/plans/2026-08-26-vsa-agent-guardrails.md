@@ -1687,7 +1687,8 @@ if [ "$event" = "Stop" ]; then
 fi
 
 for project in $projects; do
-  if ! out=$(dotnet test "$project" --nologo -v q 2>&1); then
+  # -v q silences MSBuild; the console logger at normal verbosity keeps the assertion block (Expected/Actual).
+  if ! out=$(dotnet test "$project" --nologo -v q --logger "console;verbosity=normal" 2>&1); then
     echo "$(stamp) $event exit=2 $project" >> .gate.log
     printf '%s\n' "$out" | grep -v '^ *at ' | tail -60 >&2   # drop stack frames so the failure messages survive the cut
     exit 2
@@ -1740,8 +1741,8 @@ Expected: `.gate.log` contains a `Stop exit=0` line (the hook ran at the end of 
 
 - [ ] **Step 6: Run jscpd once**
 
-Run (in `sliced/`): `npx -y jscpd@4 --config .jscpd.json`
-Expected: a console table with `csharp` and no clones (`Found 0 clones.`); `.jscpd-report/jscpd-report.json` exists with `"statistics": { "total": { ... "clones": 0, ... "percentage": 0 } }`. Note the exact key names — `Parse-Events.ps1` does not read this file, but `run.ps1` (Task 17) reads `statistics.total.clones` and `statistics.total.percentage`.
+Run (in `sliced/`): `npx -y jscpd@4 src --config .jscpd.json` — the path is passed positionally on purpose: on Windows jscpd 4 resolves the config's `"path"` to a backslash path its globber cannot match and silently analyses 0 files (exit 0, no report).
+Expected: a console table with `csharp`, 22 files analysed and no clones (`Found 0 clones.`); `.jscpd-report/jscpd-report.json` exists with `"statistics": { "total": { ... "sources": 22, "clones": 0, ... "percentage": 0 } }`. `run.ps1` (Task 17) reads `statistics.total.sources`, `.clones` and `.percentage`, and treats `sources == 0` as "jscpd analysed nothing", never as a clean result.
 
 - [ ] **Step 7: Commit**
 
@@ -2789,7 +2790,7 @@ fi
 
 - [ ] **Step 6: Test the gate and jscpd**
 
-Run (in `layered/`, Git Bash): the hand test from Task 9, Step 4 (expect `Stop exit=0`, then `exit=2` with a broken test, then revert), and `npx -y jscpd@4 --config .jscpd.json` (expect 0 clones). Remove `.gate.log`.
+Run (in `layered/`, Git Bash): the hand test from Task 9, Step 4 (expect `Stop exit=0`, then `exit=2` with a broken test, then revert), and `npx -y jscpd@4 src --config .jscpd.json` (expect files analysed > 0 and 0 clones). Remove `.gate.log`.
 
 - [ ] **Step 7: Commit**
 
@@ -3008,9 +3009,12 @@ Remove-Item $trx
 $jscpd = Join-Path ([IO.Path]::GetTempPath()) 'parse-events-sample-jscpd.json'
 '{"statistics":{"total":{"lines":100,"sources":5,"clones":2,"duplicatedLines":12,"percentage":12.0}}}' | Set-Content -Path $jscpd -Encoding utf8
 $j = Read-JscpdSummary -Path $jscpd
+Assert-Equal 5 $j.sources 'jscpd sources'
 Assert-Equal 2 $j.clones 'jscpd clones'
 Assert-Equal 12 $j.percentage 'jscpd percentage'
 Remove-Item $jscpd
+$missing = Read-JscpdSummary -Path (Join-Path ([IO.Path]::GetTempPath()) 'does-not-exist-jscpd.json')
+Assert-Equal 0 $missing.sources 'jscpd missing report -> sources 0'
 
 if ($failures -gt 0) { Write-Host "$failures assertion(s) failed"; exit 1 }
 Write-Host 'Test-ParseEvents: all assertions passed'
@@ -3168,13 +3172,17 @@ function Read-TrxSummary {
 }
 
 function Read-JscpdSummary {
-    # Reads statistics.total from jscpd's JSON reporter output.
+    # Reads statistics.total from jscpd's JSON reporter output. sources == 0 means jscpd analysed nothing.
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
-    if (-not (Test-Path -Path $Path)) { return [pscustomobject]@{ clones = $null; percentage = $null } }
+    if (-not (Test-Path -Path $Path)) { return [pscustomobject]@{ sources = 0; clones = $null; percentage = $null } }
     $j = Get-Content -Path $Path -Raw | ConvertFrom-Json -Depth 20
-    return [pscustomobject]@{ clones = [int]$j.statistics.total.clones; percentage = [double]$j.statistics.total.percentage }
+    return [pscustomobject]@{
+        sources    = [int]$j.statistics.total.sources
+        clones     = [int]$j.statistics.total.clones
+        percentage = [double]$j.statistics.total.percentage
+    }
 }
 ```
 
@@ -3266,7 +3274,7 @@ function New-RunDirectory([string]$copyName, [string]$runName) {
 function Invoke-DotnetTest([string]$dir, [string]$project, [string]$trxName) {
     Push-Location $dir
     try {
-        $out = & dotnet test $project --nologo -v q --logger "trx;LogFileName=$trxName" --results-directory (Join-Path $dir '.trx') 2>&1
+        $out = & dotnet test $project --nologo -v q --logger "console;verbosity=normal" --logger "trx;LogFileName=$trxName" --results-directory (Join-Path $dir '.trx') 2>&1
         return [pscustomobject]@{ ok = ($LASTEXITCODE -eq 0); output = (@($out) -join "`n"); trx = (Join-Path $dir ".trx/$trxName") }
     }
     finally { Pop-Location }
@@ -3274,7 +3282,10 @@ function Invoke-DotnetTest([string]$dir, [string]$project, [string]$trxName) {
 
 function Invoke-Jscpd([string]$dir) {
     Push-Location $dir
-    try { & npx -y jscpd@4 --config .jscpd.json --silent 2>&1 | Out-Null }
+    try {
+        Remove-Item -Recurse -Force (Join-Path $dir '.jscpd-report') -ErrorAction SilentlyContinue   # never read a stale report
+        & npx -y jscpd@4 src --config .jscpd.json --silent 2>&1 | Out-Null   # positional path: the config's "path" is a no-op on Windows
+    }
     finally { Pop-Location }
     return Read-JscpdSummary -Path (Join-Path $dir '.jscpd-report/jscpd-report.json')
 }
@@ -3369,6 +3380,7 @@ foreach ($copyName in $copies) {
             if ($agent.exit -ne 0) { $notes += "claude exit $($agent.exit)" }
             if ($m.ended -ne 'success') { $notes += "ended=$($m.ended)" }
             if ($m.permission_denials -gt 0) { $notes += "$($m.permission_denials) permission denials" }
+            if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
 
             $row = [pscustomobject][ordered]@{
                 copy = $copyName; task = $spec.id; rep = $rep; model = ($Model ? $Model : 'default')
