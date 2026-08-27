@@ -1650,7 +1650,7 @@ chmod +x .claude/hooks/gate.sh
 CLAUDE_PROJECT_DIR="$PWD" sh -c 'echo "{\"hook_event_name\":\"Stop\",\"stop_hook_active\":false}" | .claude/hooks/gate.sh'; echo "exit=$?"; cat .gate.log
 ```
 
-Expected: `exit=0` and a `.gate.log` line ending in `Stop exit=0`. Now break a test (`Assert.Equal(HttpStatusCode.Created` → `HttpStatusCode.OK` in `CreateOrderTests.cs`) and repeat: `exit=2`, the failure text on stderr, and a log line `Stop exit=2 tests/Orders.SliceTests`. Revert the test and `rm .gate.log`.
+Expected: `exit=0` and a `.gate.log` line ending in `Stop exit=0`. Now break a test (`ShouldBe(HttpStatusCode.Created)` → `ShouldBe(HttpStatusCode.OK)` in `CreateOrderTests.cs`) and repeat: `exit=2`, the failure text on stderr, and a log line `Stop exit=2 tests/Orders.SliceTests`. Revert the test and `rm .gate.log`.
 
 - [ ] **Step 5: Test the gate through Claude Code headlessly (spec §6)**
 
