@@ -73,7 +73,7 @@ function New-ResultRow([hashtable]$values) {
     # One fixed column set for every row. Export-Csv -Append rejects an object whose properties differ from the
     # header, so a harness-error row must carry the same columns, in the same order, with the rest left empty.
     $names = @(
-            'copy', 'task', 'rep', 'model', 'started_at', 'wall_ms',
+            'copy', 'task', 'rep', 'model', 'models_billed', 'started_at', 'wall_ms',
             'cost_usd', 'num_turns', 'duration_ms', 'duration_api_ms',
             'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_create_tokens',
             'ended', 'terminal_reason', 'stop_reason', 'is_error', 'permission_denials', 'skipped_lines',
@@ -101,6 +101,16 @@ function New-RunDirectory([string]$copyName, [string]$runName) {
     $src = Join-Path $root $copyName
     $dst = Join-Path $runsRoot $runName
     if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+    # Claude Code keeps per-project memory under %USERPROFILE%\.claude\projects\<sanitised working directory>,
+    # and this run directory's name is deterministic, so without this every rep 1 would start with the memory
+    # the last experiment's rep 1 left behind - a treatment nobody asked for.
+    $memoryRoot = Join-Path $env:USERPROFILE '.claude/projects'
+    if (Test-Path $memoryRoot) {
+        foreach ($stale in @(Get-ChildItem -Path $memoryRoot -Directory -Filter "*-vsa-runs-$runName" -ErrorAction SilentlyContinue)) {
+            Remove-Item -Recurse -Force $stale.FullName
+            Write-Host "stale agent memory removed: $($stale.FullName)"
+        }
+    }
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
     & robocopy $src $dst /E /XD bin obj worktrees .jscpd-report .trx /XF *.db *.db-shm *.db-wal .gate.log /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy $src -> $dst failed with exit code $LASTEXITCODE" }
@@ -171,6 +181,9 @@ try {
             throw "Baseline tests fail for $copyName; aborting.`n$($archBase.output)`n$($behBase.output)"
         }
         $dupBefore = Invoke-Jscpd $base
+        # Kept in memory because the baseline copy is about to go: every run folder gets its own copy, so
+        # dup_blocks_before can be re-derived from a results folder alone.
+        $dupBeforeJson = Get-Content -LiteralPath (Join-Path $base '.jscpd-report/jscpd-report.json') -Raw -ErrorAction SilentlyContinue
         if (-not $KeepRuns) { Remove-Item -Recurse -Force $base }
 
         foreach ($taskFile in $taskFiles) {
@@ -212,6 +225,11 @@ try {
                     Set-Content -Path (Join-Path $artefacts 'test-output.txt') -Value ($arch.output + "`n`n" + $beh.output)
                     $archSum = Read-TrxSummary -Path $arch.trx
                     $behSum = Read-TrxSummary -Path $beh.trx
+                    # The trx files and the "before" duplication report travel with the row, so every count in it
+                    # can be re-derived from the results folder after the run directory is gone.
+                    New-Item -ItemType Directory -Force -Path (Join-Path $artefacts 'trx') | Out-Null
+                    Copy-Item -Path (Join-Path $dir '.trx/*.trx') -Destination (Join-Path $artefacts 'trx') -ErrorAction SilentlyContinue
+                    if ($dupBeforeJson) { Set-Content -Path (Join-Path $artefacts 'jscpd-before.json') -Value $dupBeforeJson -Encoding utf8 }
 
                     Push-Location $dir
                     try {
@@ -258,9 +276,10 @@ try {
                     if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
 
                     $row = New-ResultRow @{
-                        # What ran, not what was asked for: with no -Model the CLI picks, and the transcript's
-                        # modelUsage keys are the only record of it. 'default' only when there is no transcript.
-                        copy = $copyName; task = $spec.id; rep = $rep; model = if ($Model) { $Model } else { $m.models ?? 'default' }
+                        # What ran, not what was asked for: the init event names the model the CLI chose, and
+                        # modelUsage names everything it billed. -Model is only the fallback, 'default' the last one.
+                        copy = $copyName; task = $spec.id; rep = $rep
+                        model = $m.model ?? ($Model ? $Model : 'default'); models_billed = $m.models
                         started_at = ($startedAt.ToString('s') + 'Z'); wall_ms = $agent.wall_ms
                         cost_usd = $m.cost_usd; num_turns = $m.num_turns; duration_ms = $m.duration_ms; duration_api_ms = $m.duration_api_ms
                         input_tokens = $m.input_tokens; output_tokens = $m.output_tokens

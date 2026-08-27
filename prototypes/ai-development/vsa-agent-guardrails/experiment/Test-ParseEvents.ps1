@@ -22,8 +22,8 @@ Assert-Equal 1 $m.grep_calls 'grep_calls (re-emitted tool_use id counted once)'
 Assert-Equal 0 $m.glob_calls 'glob_calls'
 Assert-Equal 1 $m.edit_calls 'edit_calls (re-emitted tool_use id counted once)'
 Assert-Equal 0 $m.write_calls 'write_calls'
-Assert-Equal 1 $m.bash_calls 'bash_calls'
-Assert-Equal 1 $m.bash_search_calls 'bash_search_calls'
+Assert-Equal 0 $m.bash_calls 'bash_calls (the one Bash call was denied, so it never ran)'
+Assert-Equal 0 $m.bash_search_calls 'bash_search_calls (a denied `ls` is not a search)'
 Assert-Equal 1 $m.skipped_lines 'skipped_lines (one truncated event line)'
 Assert-Equal $true $m.saw_result 'saw_result'
 Assert-Equal 0.17785 $m.cost_usd 'cost_usd'
@@ -38,7 +38,8 @@ Assert-Equal 'success' $m.ended 'ended'
 Assert-Equal 'completed' $m.terminal_reason 'terminal_reason'
 Assert-Equal 'end_turn' $m.stop_reason 'stop_reason'
 Assert-Equal $false $m.is_error 'is_error'
-Assert-Equal 1 $m.permission_denials 'permission_denials'
+Assert-Equal 2 $m.permission_denials 'permission_denials (a denial without a tool_use_id still counts)'
+Assert-Equal 'claude-fable-5' $m.model 'model (the model named by the init event)'
 Assert-Equal 'claude-fable-5+claude-haiku-4-5' $m.models 'models (modelUsage keys, sorted, not in source order)'
 
 # A transcript that stops before the result event: every result field stays $null, saw_result is $false.
@@ -54,6 +55,8 @@ Assert-Equal $null $tr.models 'truncated: models is null'
 Assert-Equal 0 $tr.permission_denials 'truncated: permission_denials'
 Assert-Equal 0 $tr.skipped_lines 'truncated: skipped_lines'
 Assert-Equal 2 $tr.read_calls 'truncated: tool calls up to the cut are still counted'
+Assert-Equal 1 $tr.bash_calls 'truncated: with no result event nothing is denied, so the Bash call counts'
+Assert-Equal 'claude-fable-5' $tr.model 'truncated: model is set (the init event comes first)'
 Remove-Item -LiteralPath $truncated
 
 # A result event without a permission_denials key must be 0, not 1 (@($null).Count is 1).
@@ -63,6 +66,7 @@ Assert-Equal 0 $nd.permission_denials 'result without permission_denials -> 0'
 Assert-Equal $true $nd.saw_result 'result without permission_denials -> saw_result'
 Assert-Equal $null $nd.terminal_reason 'result without terminal_reason -> null'
 Assert-Equal $null $nd.models 'result without modelUsage -> models is null'
+Assert-Equal $null $nd.model 'transcript without an init event -> model is null'
 Remove-Item -LiteralPath $noDenials
 
 $spec = Get-TaskSpec -Path "$fixtures/sample-task.md"

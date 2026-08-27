@@ -37,7 +37,7 @@ $toolUse = @(
     '{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"ls src"}}'
 ) -join ','
 $transcript = @(
-    '{"type":"system","subtype":"init","cwd":"."}'
+    '{"type":"system","subtype":"init","cwd":".","model":"stub-model"}'
     '{"type":"assistant","message":{"content":[' + $toolUse + ']}}'
     'a line that is not JSON, so that skipped_lines is exercised too'
     '{"type":"result","subtype":"success","total_cost_usd":0.1234,"num_turns":7,"duration_ms":12345,' +

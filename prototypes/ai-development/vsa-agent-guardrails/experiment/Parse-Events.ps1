@@ -25,16 +25,25 @@ function ConvertFrom-AgentEvents {
         bash_calls = 0; bash_search_calls = 0; files_read_distinct = 0
         cost_usd = $null; num_turns = $null; duration_ms = $null; duration_api_ms = $null
         input_tokens = $null; output_tokens = $null; cache_read_tokens = $null; cache_create_tokens = $null
-        ended = $null; terminal_reason = $null; stop_reason = $null; is_error = $null; models = $null
+        ended = $null; terminal_reason = $null; stop_reason = $null; is_error = $null
+        model = $null; models = $null
         permission_denials = 0; saw_result = $false; skipped_lines = 0
     }
     $files = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $seenToolIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    # The tool calls are counted after the whole transcript is read: the permission denials that say which
+    # of them never ran arrive in the result event, at the end.
+    $toolUses = [System.Collections.Generic.List[object]]::new()
+    $deniedIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 
     foreach ($line in [System.IO.File]::ReadLines($Path)) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         try { $e = $line | ConvertFrom-Json } catch { $m.skipped_lines++; continue }
         switch (Get-Prop $e 'type') {
+            'system' {
+                # The init event is the only place the CLI names the model it chose when -Model was not given.
+                if ((Get-Prop $e 'subtype') -eq 'init' -and $null -eq $m.model) { $m.model = Get-Prop $e 'model' }
+            }
             'assistant' {
                 foreach ($block in @(Get-Prop (Get-Prop $e 'message') 'content')) {
                     if ((Get-Prop $block 'type') -ne 'tool_use') { continue }
@@ -42,22 +51,7 @@ function ConvertFrom-AgentEvents {
                     # once with the tool_use block), so count each tool_use id at most once.
                     $id = Get-Prop $block 'id'
                     if ($id -and -not $seenToolIds.Add([string]$id)) { continue }
-                    $toolInput = Get-Prop $block 'input'
-                    switch (Get-Prop $block 'name') {
-                        'Read'  {
-                            $m.read_calls++
-                            $f = Get-Prop $toolInput 'file_path'
-                            if ($f) { [void]$files.Add(([string]$f -replace '\\', '/')) }   # same file, either separator
-                        }
-                        'Grep'  { $m.grep_calls++ }
-                        'Glob'  { $m.glob_calls++ }
-                        'Edit'  { $m.edit_calls++ }
-                        'Write' { $m.write_calls++ }
-                        'Bash'  {
-                            $m.bash_calls++
-                            if ([string](Get-Prop $toolInput 'command') -match '^\s*(ls|dir|find|grep|rg|git\s+grep)\b') { $m.bash_search_calls++ }
-                        }
-                    }
+                    $toolUses.Add([pscustomobject]@{ id = $id; name = (Get-Prop $block 'name'); input = (Get-Prop $block 'input') })
                 }
             }
             'result' {
@@ -77,12 +71,37 @@ function ConvertFrom-AgentEvents {
                 $m.cache_create_tokens = Get-Prop $usage 'cache_creation_input_tokens'
                 $denials = Get-Prop $e 'permission_denials'
                 $m.permission_denials = if ($null -eq $denials) { 0 } else { @($denials).Count }   # @($null).Count is 1
+                if ($null -ne $denials) {
+                    # A denied call is an attempt, not a call: it is counted as a denial and nowhere else.
+                    foreach ($d in @($denials)) {
+                        $deniedId = Get-Prop $d 'tool_use_id'
+                        if ($deniedId) { [void]$deniedIds.Add([string]$deniedId) }
+                    }
+                }
                 # The models that actually ran are the keys of modelUsage - there is no model field on the result
                 # event - and a run bills more than one when part of the work goes to a small model.
                 $modelUsage = Get-Prop $e 'modelUsage'
                 $modelNames = @()
                 if ($null -ne $modelUsage) { $modelNames = @($modelUsage.PSObject.Properties.Name) }
                 $m.models = if ($modelNames.Count -eq 0) { $null } else { ($modelNames | Sort-Object) -join '+' }
+            }
+        }
+    }
+    foreach ($tool in $toolUses) {
+        if ($tool.id -and $deniedIds.Contains([string]$tool.id)) { continue }   # blocked before it ran
+        switch ($tool.name) {
+            'Read'  {
+                $m.read_calls++
+                $f = Get-Prop $tool.input 'file_path'
+                if ($f) { [void]$files.Add(([string]$f -replace '\\', '/')) }   # same file, either separator
+            }
+            'Grep'  { $m.grep_calls++ }
+            'Glob'  { $m.glob_calls++ }
+            'Edit'  { $m.edit_calls++ }
+            'Write' { $m.write_calls++ }
+            'Bash'  {
+                $m.bash_calls++
+                if ([string](Get-Prop $tool.input 'command') -match '^\s*(ls|dir|find|grep|rg|git\s+grep)\b') { $m.bash_search_calls++ }
             }
         }
     }
