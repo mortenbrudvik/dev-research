@@ -3094,7 +3094,7 @@ id: T1
 title: Ship an order
 kind: slice-local
 scope.sliced: src/Orders.Api/Features/Ship*/**, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Application/Orders/Commands/Ship*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/**, tests/Orders.IntegrationTests/**
+scope.layered: src/Orders.Application/Orders/Commands/Ship*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/OrdersEndpoints.cs, tests/Orders.IntegrationTests/**
 ---
 Add the ability to ship an order.
 
@@ -3114,7 +3114,7 @@ id: T2
 title: Shipped orders cannot be cancelled
 kind: slice-local
 scope.sliced: src/Orders.Api/Features/CancelOrder/**, src/Orders.Api/Domain/CancellationPolicy.cs, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Application/Orders/Commands/CancelOrder/**, src/Orders.Domain/Policies/**, tests/Orders.IntegrationTests/**
+scope.layered: src/Orders.Application/Orders/Commands/CancelOrder/**, src/Orders.Domain/Policies/CancellationPolicy.cs, tests/Orders.IntegrationTests/**
 ---
 Shipped orders can no longer be cancelled.
 
@@ -3147,10 +3147,10 @@ Add tests. Run them before you finish.
 id: T4
 title: Audit trail for every command
 kind: cross-cutting
-scope.sliced: src/Orders.Api/Domain/**, src/Orders.Api/Platform/**, src/Orders.Api/Features/**, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Domain/**, src/Orders.Application/**, src/Orders.Infrastructure/**, src/Orders.Api/**, tests/Orders.IntegrationTests/**
+scope.sliced: src/Orders.Api/Domain/**, src/Orders.Api/Platform/**, src/Orders.Api/Features/**, src/Orders.Api/Program.cs, tests/Orders.SliceTests/**
+scope.layered: src/Orders.Domain/**, src/Orders.Application/**, src/Orders.Infrastructure/**, src/Orders.Api/Common/**, src/Orders.Api/Endpoints/**, src/Orders.Api/Program.cs, tests/Orders.IntegrationTests/**
 ---
-Record an audit trail for every operation that changes an order — creating and cancelling today, and any command added later: who (the value of an `X-User` request header, or "anonymous" when absent), what (the operation name), when, and the order id. An entry must be persisted in the same transaction as the change it records.
+Record an audit trail for every operation that changes an order — creating and cancelling today, and any operation added later: who (the value of an `X-User` request header, or "anonymous" when absent), what (the operation name), when, and the order id. An entry must be persisted in the same transaction as the change it records.
 
 Expose `GET /orders/{id}/audit` returning `{ "entries": [ { "actor", "action", "at" } ] }`, oldest first; 404 for an unknown order.
 
@@ -3788,7 +3788,9 @@ under `Features/`, the layered rules only on Domain→up, Application→down and
 experiment measures. The layered copy's likeliest shortcut, querying through `IOrdersDbContext` from an endpoint, is caught by a rule
 widened for fairness, not by the architecture.
 On T3 the sliced rules steer the agent to duplicate the order summary in the new slice while the layered scope sanctions sharing
-`OrderDtos.cs`, so a jscpd delta on T3 measures each architecture's sanctioned answer, not agent sloppiness.
+`OrderDtos.cs`, so a jscpd delta on T3 measures each architecture's sanctioned answer, not agent sloppiness. T3's scope globs
+(`*Customer*`) accept any slice or query name containing "Customer"; an agent that instead adds a second route to the existing
+`ListOrders` use case takes an out-of-scope hit in either copy — a naming judgement, not sprawl, so discount it when reading `files_out_of_scope`.
 Wall time is not comparable across copies: the layered gate builds four projects per invocation, the sliced gate two.
 
 ## Raw data
