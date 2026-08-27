@@ -18,10 +18,11 @@ builder.Services.AddDbContext<OrdersDbContext>(options =>
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddFeatureHandlers();
+// In Development and Testing, put the exception message in the 500 body so a failing test or curl says why.
+var exposeExceptionDetail = builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Testing");
 builder.Services.AddProblemDetails(options => options.CustomizeProblemDetails = context =>
 {
-    // Outside Production, put the exception message in the 500 body so a failing test or curl says why.
-    if (!builder.Environment.IsProduction() && context.Exception is not null)
+    if (exposeExceptionDetail && context.Exception is not null)
     {
         context.ProblemDetails.Detail = context.Exception.Message;
     }

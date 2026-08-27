@@ -22,23 +22,31 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
         builder.UseSetting("ConnectionStrings:Orders", $"Data Source={_dbPath}");
     }
 
-    public Task InitializeAsync()
+    public async Task InitializeAsync()
     {
         using var scope = Services.CreateScope();
-        scope.ServiceProvider.GetRequiredService<OrdersDbContext>().Database.Migrate();
-        return Task.CompletedTask;
+        await scope.ServiceProvider.GetRequiredService<OrdersDbContext>().Database.MigrateAsync();
     }
 
+    // Explicit: the base class already has a ValueTask DisposeAsync(); xUnit's IAsyncLifetime wants a Task.
     async Task IAsyncLifetime.DisposeAsync()
     {
         await base.DisposeAsync();
-        SqliteConnection.ClearAllPools();
-        if (File.Exists(_dbPath))
+        SqliteConnection.ClearAllPools();   // process-wide on purpose: Microsoft.Data.Sqlite has no per-connection-string clear
+        try
         {
             File.Delete(_dbPath);
         }
+        catch (IOException)
+        {
+            // A leaked temp file is better than a false test failure; %TEMP% cleanup takes care of it.
+        }
     }
 
+    /// <summary>
+    /// Runs a query in a fresh scope. The context is disposed when the delegate returns: owned collections
+    /// (Lines) are loaded with the order, any other navigation needs an Include inside the delegate.
+    /// </summary>
     public async Task<T> WithDb<T>(Func<OrdersDbContext, Task<T>> action)
     {
         using var scope = Services.CreateScope();

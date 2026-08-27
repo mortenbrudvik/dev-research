@@ -16,7 +16,7 @@ public class CreateOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
             lines = new[] { new { sku = "SKU-1", quantity = 2, unitPrice = 9.5 } },
         });
 
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.Created);
         var body = await response.Content.ReadFromJsonAsync<CreateOrderResponse>();
         Assert.NotNull(body);
         Assert.Equal("Pending", body.Status);
@@ -35,7 +35,7 @@ public class CreateOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         var response = await client.PostAsJsonAsync("/orders", new { customerId = "cust-1", lines = Array.Empty<object>() });
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.BadRequest);
     }
 
     [Fact]
@@ -49,6 +49,6 @@ public class CreateOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
             lines = new[] { new { sku = "SKU-1", quantity = 0, unitPrice = 9.5 } },
         });
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.BadRequest);
     }
 }
