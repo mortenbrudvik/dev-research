@@ -3586,7 +3586,7 @@ git commit -m "vsa-agent-guardrails(experiment): smoke-run example results and r
 **Files:**
 - Create: `P/experiment/Test-Parity.ps1`
 
-Runs both APIs, sends the same request sequence to each, and compares status codes and bodies with ids, timestamps and trace ids masked; also compares the test file names and test method names of the two test projects (spec §6).
+Runs both APIs, sends the same request sequence to each, and compares status codes and bodies with ids, timestamps and trace ids masked; also compares the text of the four test classes across the two test projects after stripping the `using` block and the `namespace` line and applying the four DTO renames from Task 13 — the test bodies are meant to be byte-for-byte the same, and a drifted assertion in one copy must show up here, not just a renamed method (spec §6).
 
 - [ ] **Step 1: Write the script**
 
@@ -3651,12 +3651,25 @@ function Normalize([string]$s) {
     return $s
 }
 
-function Get-TestMethods([string]$dir) {
+# The test classes must be byte-for-byte the same apart from the namespace, the using block and the four DTO
+# names Task 13 renames (sliced name -> layered name). Everything else — requests, assertions, method names — is
+# compared as text, so a drifted assertion in one copy fails the check.
+$DtoRenames = @{
+    CreateOrderResponse = 'CreateOrderResult'
+    GetOrderResponse    = 'OrderDto'
+    CancelOrderResponse = 'CancelOrderResult'
+    ListOrdersResponse  = 'OrderListDto'
+}
+
+function Get-NormalizedTests([string]$dir) {
     $result = @{}
     foreach ($f in Get-ChildItem -Path $dir -Filter '*Tests.cs') {
-        $methods = @(Select-String -Path $f.FullName -Pattern 'public async Task (\w+)\(' -AllMatches |
-            ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object)
-        $result[$f.Name] = $methods
+        $lines = [System.IO.File]::ReadAllLines($f.FullName) |     # ReadAllLines accepts LF and CRLF alike
+            Where-Object { $_ -notmatch '^\s*(using |namespace )' } |
+            ForEach-Object { $_.TrimEnd() }
+        $text = ($lines -join "`n").Trim()
+        foreach ($name in $DtoRenames.Keys) { $text = $text -replace "$name", $DtoRenames[$name] }
+        $result[$f.Name] = $text
     }
     return $result
 }
@@ -3680,12 +3693,23 @@ try {
         else { Write-Host "same $($sa.step) ($($sa.status))" }
     }
 
-    $ta = Get-TestMethods (Join-Path $root 'sliced/tests/Orders.SliceTests')
-    $tb = Get-TestMethods (Join-Path $root 'layered/tests/Orders.IntegrationTests')
+    $ta = Get-NormalizedTests (Join-Path $root 'sliced/tests/Orders.SliceTests')
+    $tb = Get-NormalizedTests (Join-Path $root 'layered/tests/Orders.IntegrationTests')
     foreach ($file in (@($ta.Keys) + @($tb.Keys) | Sort-Object -Unique)) {
-        $ma = @($ta[$file]) -join ','; $mb = @($tb[$file]) -join ','
-        if ($ma -ne $mb) { $failures++; Write-Host "DIFF tests $file`n  sliced:  $ma`n  layered: $mb" }
-        else { Write-Host "same tests $file ($(@($ta[$file]).Count) methods)" }
+        if (-not ($ta.ContainsKey($file) -and $tb.ContainsKey($file))) {
+            $failures++; Write-Host "DIFF tests $file exists in only one copy"; continue
+        }
+        if ($ta[$file] -ne $tb[$file]) {
+            $failures++
+            $la = $ta[$file] -split "`n"; $lb = $tb[$file] -split "`n"
+            $n = 0
+            while ($n -lt $la.Count -and $n -lt $lb.Count -and $la[$n] -eq $lb[$n]) { $n++ }
+            Write-Host "DIFF tests $file at normalized line $($n + 1)`n  sliced:  $($la[$n])`n  layered: $($lb[$n])"
+        }
+        else {
+            $count = [regex]::Matches($ta[$file], 'public async Task \w+\(').Count
+            Write-Host "same tests $file ($count methods)"
+        }
     }
 }
 finally {
@@ -3703,7 +3727,7 @@ Write-Host 'Test-Parity: the copies behave identically'
 - [ ] **Step 2: Run it**
 
 Run: `pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/Test-Parity.ps1`
-Expected: nine `same <step> (<status>)` lines (201, 400, 200, 404, 200, 400, 200, 409, 200), four `same tests <file>` lines, then `Test-Parity: the copies behave identically`, exit 0. A `DIFF` line means the copies diverged — fix the copy that deviates from the spec (§4.1), not the script.
+Expected: nine `same <step> (<status>)` lines (201, 400, 200, 404, 200, 400, 200, 409, 200), four `same tests <file>` lines (4, 3, 3, 4 methods), then `Test-Parity: the copies behave identically`, exit 0. A `DIFF` line means the copies diverged — fix the copy that deviates from the spec (§4.1) or from its sliced original, not the script. To see a `DIFF tests` line once, change one literal in a layered assertion, run, and revert (`git checkout -- layered/tests`).
 
 - [ ] **Step 3: Commit**
 
