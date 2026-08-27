@@ -1971,6 +1971,10 @@ git commit -m "vsa-agent-guardrails(layered): scaffold and domain"
 
 The DTO records carry exactly the property names of the sliced copy's response records, so the JSON is identical.
 
+- [ ] **Step 0: Trim the template boilerplate**
+
+In `src/Orders.Domain/Orders.Domain.csproj`, `src/Orders.Application/Orders.Application.csproj` and `src/Orders.Infrastructure/Orders.Infrastructure.csproj`, delete the template's `<PropertyGroup>` (`TargetFramework`, `ImplicitUsings`, `Nullable`) — `Directory.Build.props` sets all three — leaving only the `ItemGroup`s, as the sliced copy's csproj does (`Orders.Api.csproj` is replaced in Task 12). `dotnet build --nologo` must still succeed with 0 warnings.
+
 - [ ] **Step 1: The persistence abstraction and DI**
 
 `src/Orders.Application/Common/Interfaces/IOrdersDbContext.cs`:
