@@ -465,10 +465,11 @@ builder.Services.AddDbContext<OrdersDbContext>(options =>
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddFeatureHandlers();
+// In Development and Testing, put the exception message in the 500 body so a failing test or curl says why.
+var exposeExceptionDetail = builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Testing");
 builder.Services.AddProblemDetails(options => options.CustomizeProblemDetails = context =>
 {
-    // Outside Production, put the exception message in the 500 body so a failing test or curl says why.
-    if (!builder.Environment.IsProduction() && context.Exception is not null)
+    if (exposeExceptionDetail && context.Exception is not null)
     {
         context.ProblemDetails.Detail = context.Exception.Message;
     }
@@ -562,7 +563,6 @@ Replace `tests/Orders.SliceTests/Orders.SliceTests.csproj`:
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.11" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
@@ -611,23 +611,31 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
         builder.UseSetting("ConnectionStrings:Orders", $"Data Source={_dbPath}");
     }
 
-    public Task InitializeAsync()
+    public async Task InitializeAsync()
     {
         using var scope = Services.CreateScope();
-        scope.ServiceProvider.GetRequiredService<OrdersDbContext>().Database.Migrate();
-        return Task.CompletedTask;
+        await scope.ServiceProvider.GetRequiredService<OrdersDbContext>().Database.MigrateAsync();
     }
 
+    // Explicit: the base class already has a ValueTask DisposeAsync(); xUnit's IAsyncLifetime wants a Task.
     async Task IAsyncLifetime.DisposeAsync()
     {
         await base.DisposeAsync();
-        SqliteConnection.ClearAllPools();
-        if (File.Exists(_dbPath))
+        SqliteConnection.ClearAllPools();   // process-wide on purpose: Microsoft.Data.Sqlite has no per-connection-string clear
+        try
         {
             File.Delete(_dbPath);
         }
+        catch (IOException)
+        {
+            // A leaked temp file is better than a false test failure; %TEMP% cleanup takes care of it.
+        }
     }
 
+    /// <summary>
+    /// Runs a query in a fresh scope. The context is disposed when the delegate returns: owned collections
+    /// (Lines) are loaded with the order, any other navigation needs an Include inside the delegate.
+    /// </summary>
     public async Task<T> WithDb<T>(Func<OrdersDbContext, Task<T>> action)
     {
         using var scope = Services.CreateScope();
@@ -655,7 +663,25 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
 }
 ```
 
-- [ ] **Step 3: Write the failing CreateOrder tests**
+- [ ] **Step 3: Write the assertion helper and the failing CreateOrder tests**
+
+`tests/Orders.SliceTests/HttpAssertions.cs` — on a status mismatch the failure message carries the response body, so a 500 says why (the platform puts the exception message in the ProblemDetails `detail` outside Production):
+
+```csharp
+namespace Orders.SliceTests;
+
+public static class HttpAssertions
+{
+    public static async Task ShouldBe(this HttpResponseMessage response, HttpStatusCode expected)
+    {
+        if (response.StatusCode != expected)
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            Assert.Fail($"Expected {(int)expected} {expected} but got {(int)response.StatusCode} {response.StatusCode}. Body: {body}");
+        }
+    }
+}
+```
 
 `tests/Orders.SliceTests/CreateOrderTests.cs`:
 
@@ -678,7 +704,7 @@ public class CreateOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
             lines = new[] { new { sku = "SKU-1", quantity = 2, unitPrice = 9.5 } },
         });
 
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.Created);
         var body = await response.Content.ReadFromJsonAsync<CreateOrderResponse>();
         Assert.NotNull(body);
         Assert.Equal("Pending", body.Status);
@@ -697,7 +723,7 @@ public class CreateOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         var response = await client.PostAsJsonAsync("/orders", new { customerId = "cust-1", lines = Array.Empty<object>() });
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.BadRequest);
     }
 
     [Fact]
@@ -711,7 +737,7 @@ public class CreateOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
             lines = new[] { new { sku = "SKU-1", quantity = 0, unitPrice = 9.5 } },
         });
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.BadRequest);
     }
 }
 ```
@@ -753,7 +779,7 @@ public sealed class CreateOrderValidator : AbstractValidator<CreateOrderRequest>
     public CreateOrderValidator()
     {
         RuleFor(r => r.CustomerId).NotEmpty().MaximumLength(100);
-        RuleFor(r => r.Lines).NotEmpty().WithMessage("An order needs at least one line.");
+        RuleFor(r => r.Lines).NotEmpty().WithMessage("At least one line is required.");   // deliberately not the domain's wording: the 400 (shape) and the 409 (invariant) are independent
         RuleForEach(r => r.Lines).ChildRules(line =>
         {
             line.RuleFor(l => l.Sku).NotEmpty().MaximumLength(50);
@@ -849,7 +875,7 @@ public class GetOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         var response = await client.GetAsync($"/orders/{id}");
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.OK);
         var body = await response.Content.ReadFromJsonAsync<GetOrderResponse>();
         Assert.NotNull(body);
         Assert.Equal(id, body.Id);
@@ -882,7 +908,7 @@ public class GetOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         var response = await client.GetAsync($"/orders/{Guid.NewGuid()}");
 
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.NotFound);
     }
 }
 ```
@@ -1002,7 +1028,7 @@ public class CancelOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         var response = await client.PostAsync($"/orders/{id}/cancel", content: null);
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.OK);
         var body = await response.Content.ReadFromJsonAsync<CancelOrderResponse>();
         Assert.NotNull(body);
         Assert.Equal("Cancelled", body.Status);
@@ -1020,7 +1046,7 @@ public class CancelOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         var response = await client.PostAsync($"/orders/{Guid.NewGuid()}/cancel", content: null);
 
-        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.NotFound);
     }
 
     [Fact]
@@ -1031,7 +1057,7 @@ public class CancelOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         var response = await client.PostAsync($"/orders/{id}/cancel", content: null);
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.Conflict);
     }
 
     [Fact]
@@ -1042,7 +1068,7 @@ public class CancelOrderTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         var response = await client.PostAsync($"/orders/{id}/cancel", content: null);
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.OK);
     }
 }
 ```
@@ -1196,7 +1222,7 @@ public class ListOrdersTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         var response = await client.GetAsync("/orders?status=Lost");
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        await response.ShouldBe(HttpStatusCode.BadRequest);
     }
 }
 ```
@@ -1923,7 +1949,7 @@ public sealed class CreateOrderCommandValidator : AbstractValidator<CreateOrderC
     public CreateOrderCommandValidator()
     {
         RuleFor(c => c.CustomerId).NotEmpty().MaximumLength(100);
-        RuleFor(c => c.Lines).NotEmpty().WithMessage("An order needs at least one line.");
+        RuleFor(c => c.Lines).NotEmpty().WithMessage("At least one line is required.");   // deliberately not the domain's wording: the 400 (shape) and the 409 (invariant) are independent
         RuleForEach(c => c.Lines).ChildRules(line =>
         {
             line.RuleFor(l => l.Sku).NotEmpty().MaximumLength(50);
@@ -2298,10 +2324,11 @@ builder.Host.UseDefaultServiceProvider(options =>
 
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration.GetConnectionString("Orders") ?? "Data Source=orders.db");
+// In Development and Testing, put the exception message in the 500 body so a failing test or curl says why.
+var exposeExceptionDetail = builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Testing");
 builder.Services.AddProblemDetails(options => options.CustomizeProblemDetails = context =>
 {
-    // Outside Production, put the exception message in the 500 body so a failing test or curl says why.
-    if (!builder.Environment.IsProduction() && context.Exception is not null)
+    if (exposeExceptionDetail && context.Exception is not null)
     {
         context.ProblemDetails.Detail = context.Exception.Message;
     }
@@ -2412,23 +2439,31 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
         builder.UseSetting("ConnectionStrings:Orders", $"Data Source={_dbPath}");
     }
 
-    public Task InitializeAsync()
+    public async Task InitializeAsync()
     {
         using var scope = Services.CreateScope();
-        scope.ServiceProvider.GetRequiredService<OrdersDbContext>().Database.Migrate();
-        return Task.CompletedTask;
+        await scope.ServiceProvider.GetRequiredService<OrdersDbContext>().Database.MigrateAsync();
     }
 
+    // Explicit: the base class already has a ValueTask DisposeAsync(); xUnit's IAsyncLifetime wants a Task.
     async Task IAsyncLifetime.DisposeAsync()
     {
         await base.DisposeAsync();
-        SqliteConnection.ClearAllPools();
-        if (File.Exists(_dbPath))
+        SqliteConnection.ClearAllPools();   // process-wide on purpose: Microsoft.Data.Sqlite has no per-connection-string clear
+        try
         {
             File.Delete(_dbPath);
         }
+        catch (IOException)
+        {
+            // A leaked temp file is better than a false test failure; %TEMP% cleanup takes care of it.
+        }
     }
 
+    /// <summary>
+    /// Runs a query in a fresh scope. The context is disposed when the delegate returns: owned collections
+    /// (Lines) are loaded with the order, any other navigation needs an Include inside the delegate.
+    /// </summary>
     public async Task<T> WithDb<T>(Func<OrdersDbContext, Task<T>> action)
     {
         using var scope = Services.CreateScope();
@@ -2455,9 +2490,9 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
 }
 ```
 
-- [ ] **Step 3: The four test classes**
+- [ ] **Step 3: The assertion helper and the four test classes**
 
-Copy the four test files from `sliced/tests/Orders.SliceTests/` (Tasks 4–7) into `tests/Orders.IntegrationTests/` and apply exactly these edits to each:
+Copy `HttpAssertions.cs` and the four test files from `sliced/tests/Orders.SliceTests/` (Tasks 4–7) into `tests/Orders.IntegrationTests/` and apply exactly these edits to each:
 
 - `namespace Orders.SliceTests;` → `namespace Orders.IntegrationTests;`
 - `using Orders.Api.Domain;` → `using Orders.Domain.Enums;`
