@@ -1,0 +1,8 @@
+bin/
+obj/
+*.db
+*.db-shm
+*.db-wal
+.gate.log
+.jscpd-report/
+.trx/
