@@ -1573,7 +1573,7 @@ public class SliceRules
 Run: `dotnet test tests/Orders.ArchitectureTests --nologo`
 Expected: `Passed! ... Passed: 8, Total: 8` (three negative controls, five rules).
 
-- [ ] **Step 6: Composition-root test**
+- [ ] **Step 6b: Composition-root test**
 
 ArchUnitNET drops the `<Main>$` method and the closure types that top-level statements compile into, so nothing in
 `Program.cs` is visible to the slice rules. This text-level test keeps `Program.cs` a composition root (service
@@ -1630,8 +1630,8 @@ public class CompositionRoot
 ```
 
 Run: `dotnet test tests/Orders.ArchitectureTests --nologo`
-Expected: `Passed! ... Passed: 10, Total: 10`. Then add `app.MapGet("/ping", () => "pong");` to `src/Orders.Api/Program.cs`,
-run again — `Program_cs_registers_no_routes` fails listing `.MapGet(` — and restore the file (`git checkout -- src/Orders.Api/Program.cs`).
+Expected: `Passed! ... Passed: 10, Total: 10`. Then add `app.MapGet("/ping", () => "pong");` to `src/Orders.Api/Program.cs`
+(immediately before `app.Run();` — top-level statements must precede the `partial class Program` at the end of the file), run again — `Program_cs_registers_no_routes` fails listing `.MapGet(` — and restore the file (`git checkout -- src/Orders.Api/Program.cs`).
 
 - [ ] **Step 7: Prove the slice rule bites on the real code, then revert**
 
@@ -2950,7 +2950,8 @@ public class CompositionRoot
 ```
 
 Run: `dotnet test tests/Orders.ArchitectureTests --nologo` — Expected: `Passed: 8`. Then add
-`app.MapGet("/ping", () => "pong");` to `src/Orders.Api/Program.cs`, run again — `Program_cs_registers_no_routes`
+`app.MapGet("/ping", () => "pong");` to `src/Orders.Api/Program.cs` immediately before `app.Run();` (top-level statements must
+precede the `partial class Program` at the end of the file), run again — `Program_cs_registers_no_routes`
 fails listing `.MapGet(` — and restore the file (`git checkout -- src/Orders.Api/Program.cs`).
 
 - [ ] **Step 5: Guardrail files**
