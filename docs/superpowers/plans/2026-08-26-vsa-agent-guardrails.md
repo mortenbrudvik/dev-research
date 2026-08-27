@@ -1232,6 +1232,16 @@ public class ListOrdersTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         await response.ShouldBe(HttpStatusCode.BadRequest);
     }
+
+    [Fact]
+    public async Task List_with_numeric_status_returns_400()
+    {
+        var client = api.CreateClient();
+
+        var response = await client.GetAsync("/orders?status=1");   // Enum.TryParse would accept this as Shipped
+
+        await response.ShouldBe(HttpStatusCode.BadRequest);
+    }
 }
 ```
 
@@ -1296,14 +1306,16 @@ public sealed class ListOrdersEndpoint : IEndpoint
             OrderStatus? filter = null;
             if (status is not null)
             {
-                if (!Enum.TryParse<OrderStatus>(status, ignoreCase: true, out var parsed))
+                // Match by name only: Enum.TryParse would also accept "1" (Shipped) or "99" (an undefined value).
+                var name = Enum.GetNames<OrderStatus>().FirstOrDefault(n => n.Equals(status, StringComparison.OrdinalIgnoreCase));
+                if (name is null)
                 {
                     return Results.ValidationProblem(new Dictionary<string, string[]>
                     {
                         ["status"] = [$"'{status}' is not one of {string.Join(", ", Enum.GetNames<OrderStatus>())}."],
                     });
                 }
-                filter = parsed;
+                filter = Enum.Parse<OrderStatus>(name);
             }
             return Results.Ok(await handler.Handle(filter, cancellationToken));
         });
@@ -1313,7 +1325,7 @@ public sealed class ListOrdersEndpoint : IEndpoint
 - [ ] **Step 4: Run the whole slice suite**
 
 Run: `dotnet test tests/Orders.SliceTests --nologo`
-Expected: `Passed! ... Passed: 13, Total: 13`.
+Expected: `Passed! ... Passed: 14, Total: 14`.
 
 - [ ] **Step 5: Commit**
 
@@ -2285,14 +2297,16 @@ public static class OrdersEndpoints
             OrderStatus? filter = null;
             if (status is not null)
             {
-                if (!Enum.TryParse<OrderStatus>(status, ignoreCase: true, out var parsed))
+                // Match by name only: Enum.TryParse would also accept "1" (Shipped) or "99" (an undefined value).
+                var name = Enum.GetNames<OrderStatus>().FirstOrDefault(n => n.Equals(status, StringComparison.OrdinalIgnoreCase));
+                if (name is null)
                 {
                     return Results.ValidationProblem(new Dictionary<string, string[]>
                     {
                         ["status"] = [$"'{status}' is not one of {string.Join(", ", Enum.GetNames<OrderStatus>())}."],
                     });
                 }
-                filter = parsed;
+                filter = Enum.Parse<OrderStatus>(name);
             }
             return Results.Ok(await handler.Handle(filter, cancellationToken));
         });
@@ -2521,7 +2535,7 @@ Test method names, requests, and assertions stay byte-for-byte the same — that
 - [ ] **Step 4: Run**
 
 Run (in `layered/`): `dotnet test tests/Orders.IntegrationTests --nologo`
-Expected: `Passed! ... Passed: 13, Total: 13` — the same count as the sliced suite.
+Expected: `Passed! ... Passed: 14, Total: 14` — the same count as the sliced suite.
 
 - [ ] **Step 5: Commit**
 
@@ -3366,7 +3380,7 @@ Prerequisites: `claude` logged in on this machine (`claude --version` prints `2.
 - [ ] **Step 1: Run the smoke test**
 
 Run: `pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1`
-Expected: `== baseline check: sliced`, `== run sliced-T1-1 (Ship an order)`, then a summary line such as `cost $3.12  turns 24  files_read 9  changed 6  out_of_scope 0  build True  behaviour 16/16  arch 5/5  total so far $3.12`, then `Results: ...results/<timestamp>/results.csv`. Open the CSV: one data row with every column filled (`notes` may be empty). Look at `events.jsonl`, `diff.patch` and `gate.log` in the run's artefact folder; the diff should show a new `Features/ShipOrder/` folder and a new test class. If `behaviour_tests_failed` is not 0 or `files_out_of_scope` is not 0, that is a finding, not a harness error — keep it.
+Expected: `== baseline check: sliced`, `== run sliced-T1-1 (Ship an order)`, then a summary line such as `cost $3.12  turns 24  files_read 9  changed 6  out_of_scope 0  build True  behaviour 17/17  arch 5/5  total so far $3.12`, then `Results: ...results/<timestamp>/results.csv`. Open the CSV: one data row with every column filled (`notes` may be empty). Look at `events.jsonl`, `diff.patch` and `gate.log` in the run's artefact folder; the diff should show a new `Features/ShipOrder/` folder and a new test class. If `behaviour_tests_failed` is not 0 or `files_out_of_scope` is not 0, that is a finding, not a harness error — keep it.
 
 If the run ends with `ended=error_max_budget_usd` or `claude exit 1` in `notes`, raise `-MaxBudgetUsd` and repeat once; if it ends with permission denials, inspect `stderr.txt` and `events.jsonl` for the denied tool.
 
@@ -3638,7 +3652,7 @@ pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/Test-ParseEvents.
 git status --short
 ```
 
-Expected: both `dotnet test` runs report `Passed!` for every project (13 behaviour + 5 architecture tests in each copy); `Test-ParseEvents: all assertions passed`; `0` warnings from the strict site build (the prototype is outside `docs/`); `git status` shows only the untracked/modified files of this task.
+Expected: both `dotnet test` runs report `Passed!` for every project (14 behaviour + 5 architecture tests in each copy); `Test-ParseEvents: all assertions passed`; `0` warnings from the strict site build (the prototype is outside `docs/`); `git status` shows only the untracked/modified files of this task.
 
 - [ ] **Step 3: Commit**
 
