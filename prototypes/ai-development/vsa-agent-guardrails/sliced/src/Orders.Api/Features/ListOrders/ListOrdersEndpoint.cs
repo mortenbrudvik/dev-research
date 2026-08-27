@@ -11,14 +11,16 @@ public sealed class ListOrdersEndpoint : IEndpoint
             OrderStatus? filter = null;
             if (status is not null)
             {
-                if (!Enum.TryParse<OrderStatus>(status, ignoreCase: true, out var parsed))
+                // Match by name only: Enum.TryParse would also accept "1" (Shipped) or "99" (an undefined value).
+                var name = Enum.GetNames<OrderStatus>().FirstOrDefault(n => n.Equals(status, StringComparison.OrdinalIgnoreCase));
+                if (name is null)
                 {
                     return Results.ValidationProblem(new Dictionary<string, string[]>
                     {
                         ["status"] = [$"'{status}' is not one of {string.Join(", ", Enum.GetNames<OrderStatus>())}."],
                     });
                 }
-                filter = parsed;
+                filter = Enum.Parse<OrderStatus>(name);
             }
             return Results.Ok(await handler.Handle(filter, cancellationToken));
         });

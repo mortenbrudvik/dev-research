@@ -50,4 +50,14 @@ public class ListOrdersTests(ApiFixture api) : IClassFixture<ApiFixture>
 
         await response.ShouldBe(HttpStatusCode.BadRequest);
     }
+
+    [Fact]
+    public async Task List_with_numeric_status_returns_400()
+    {
+        var client = api.CreateClient();
+
+        var response = await client.GetAsync("/orders?status=1");   // Enum.TryParse would accept this as Shipped
+
+        await response.ShouldBe(HttpStatusCode.BadRequest);
+    }
 }
