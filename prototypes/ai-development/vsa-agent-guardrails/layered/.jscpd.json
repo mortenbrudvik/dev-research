@@ -1,0 +1,10 @@
+{
+  "format": ["csharp"],
+  "ignore": ["**/Migrations/**", "**/bin/**", "**/obj/**"],
+  "minTokens": 50,
+  "minLines": 5,
+  "threshold": 0,
+  "reporters": ["console", "json"],
+  "output": "./.jscpd-report",
+  "gitignore": true
+}
