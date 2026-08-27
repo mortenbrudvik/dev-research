@@ -14,7 +14,7 @@ The guide's thesis rests on mechanism arguments and experience reports; no study
 
 **Hypotheses** (from guide sections 5.1–5.3 and 8.2–8.3), stated so the results can contradict them:
 
-- H1. On the three slice-local tasks, `sliced/` runs read fewer distinct files and use fewer input tokens than `layered/` runs, and make fewer edits outside the expected scope.
+- H1. On the three slice-local tasks, `sliced/` runs read fewer distinct files and ingest fewer context tokens (`cache_create_tokens`; under prompt caching `input_tokens` is only the uncached delta) than `layered/` runs, and make fewer edits outside the expected scope.
 - H2. On the cross-cutting task (T4) and the persistence task (T5), `sliced/` shows no advantage; it may read more files and change more files than `layered/`.
 - H3. Behaviour-test pass rate does not differ materially between the copies (as the SonarSource minimal-pair study found for code cleanliness); the differences are in cost and scope, not correctness.
 
@@ -195,11 +195,11 @@ The runner never edits the copies in the repository; a failed or interrupted run
 | `dup_blocks_before, dup_blocks_after, dup_lines_pct_after` | jscpd JSON |
 | `notes` | runner: e.g. `ended=error_max_budget_usd`, `no result event`, `claude exit 1`, `N permission denials`, `agent committed (N commits)`, `no behaviour trx (build failed?)`, `harness error: …` |
 
-`REPORT.md` aggregates per copy × task: median and range of `files_read_distinct`, `input_tokens`, `cost_usd`, `files_changed`, `files_out_of_scope`, and the fraction of runs with `build_ok && behaviour_tests_failed == 0 && arch_tests_failed == 0`.
+`REPORT.md` aggregates per copy × task: median and range of `files_read_distinct`, `cache_create_tokens` (context tokens — `input_tokens` stays near zero under prompt caching), `cost_usd`, `files_changed`, `files_out_of_scope`, and the fraction of runs with `build_ok && behaviour_tests_failed == 0 && arch_tests_failed == 0`.
 
 ### 5.4 Cost
 
-Measured baseline on 2026-08-26 with the CLI's default model (Claude Fable 5): a trivial five-turn run with project-only settings cost `$0.18` and carried about 27k cached tokens per turn; the same kind of run with the machine's user-level settings cost `$0.54–0.87`. A real task run of 20–40 turns was therefore expected to cost `$2–8`, and `-MaxBudgetUsd` defaults to `8` as a ceiling; the first real run (2026-08-27, sliced, T1: 27 turns, 14 files read, 581k cached tokens) cost `$0.72`, so a full 30-run experiment is likely to land nearer `$20–40`. Default experiment: 2 copies × 5 tasks × 3 repetitions = 30 runs — hard ceiling `$240`, expected `$60–150`. `-Repetitions 1 -Task T1` is the smoke run that calibrates the budget before a full experiment; `-Model claude-sonnet-5` cuts the cost several-fold if the owner prefers to run the bulk of the repetitions on a cheaper model (then the model is a recorded column, and the report compares like with like). The runner prints the running total after each run.
+Measured baseline on 2026-08-26 with the CLI's default model (Claude Fable 5): a trivial five-turn run with project-only settings cost `$0.18` and carried about 27k cached tokens per turn; the same kind of run with the machine's user-level settings cost `$0.54–0.87`. A real task run of 20–40 turns was therefore expected to cost `$2–8`, and `-MaxBudgetUsd` defaults to `8` as a ceiling; the first real run (2026-08-27, sliced, T1: 27 turns, 14 files read, 581k cached tokens) cost `$0.72`, so a full 30-run experiment is likely to land nearer `$20–40`. Default experiment: 2 copies × 5 tasks × 3 repetitions = 30 runs — hard ceiling `$240`, expected `$60–150` before measurement and `$20–40` after the smoke run (T1 is the cheapest task; the cross-cutting T4 will cost more). `-Repetitions 1 -Task T1` is the smoke run that calibrates the budget before a full experiment; `-Model claude-sonnet-5` cuts the cost several-fold if the owner prefers to run the bulk of the repetitions on a cheaper model (then the model is a recorded column, and the report compares like with like). The runner prints the running total after each run.
 
 ## 6. Verification
 
