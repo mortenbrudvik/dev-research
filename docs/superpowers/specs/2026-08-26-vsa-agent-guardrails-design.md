@@ -85,7 +85,7 @@ prototypes/ai-development/vsa-agent-guardrails/
     ├── Parse-Events.ps1            stream-json → metrics, task-file parsing, scope globs, TRX and jscpd readers (dot-sourced by run.ps1)
     ├── Test-ParseEvents.ps1        plain-assertion tests for Parse-Events.ps1 against fixtures/ (no Pester dependency)
     ├── fixtures/                   sample-events.jsonl (observed 2.1.246 event shapes), sample-task.md
-    ├── Test-Parity.ps1             starts both copies, sends the same requests, compares masked responses and test method lists (section 6)
+    ├── Test-Parity.ps1             starts both copies, sends the same requests, compares masked responses and the normalised text of the test classes (section 6)
     ├── results/
     │   ├── example-results.csv     committed: the columns, with one smoke-run row
     │   └── <timestamp>/            per experiment: results.csv, and per run events.jsonl, diff.patch, test-output.txt, jscpd.json
