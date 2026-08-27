@@ -32,7 +32,7 @@ Whatever the numbers say, they go into `experiment/REPORT.md` and, condensed, in
 | Runner language | PowerShell 7 (`experiment/run.ps1`) | Python — would depend on the site's `.venv` or a second toolchain; a .NET console runner — heavier than the job |
 | Repetitions | 3 per copy × task by default (30 runs); `-Repetitions 1` for a smoke run | 1 — too noisy for a nondeterministic agent; 5+ — cost without a clear gain for a first experiment |
 | Where a run executes | A fresh copy of the variant in a temporary directory outside the repository, initialised as its own git repository with one baseline commit | A git worktree of `dev-research` — the repository's root `CLAUDE.md` (site conventions) would be loaded into every run's context, and diffs would have to be scoped by path |
-| Agent configuration per run | `--setting-sources project` (only the copy's `CLAUDE.md` and `.claude/settings.json`), `--permission-mode dontAsk`, an explicit tool allow-list plus a deny-list for content-dumping shell commands, stdin from `/dev/null` | The machine's default settings — user-level plugins and hooks add ~50 tools and tens of thousands of cached tokens to every turn (measured 2026-08-26: 80 tools with user settings, 29 with project-only; a trivial run cost $0.54–0.87 versus $0.18); `--bare` — also skips `CLAUDE.md` discovery and hooks, which are the treatment |
+| Agent configuration per run | `--setting-sources project` (only the copy's `CLAUDE.md` and `.claude/settings.json`), `--permission-mode dontAsk`, an explicit tool allow-list plus a deny-list for content-dumping shell commands, the prompt piped on stdin | The machine's default settings — user-level plugins and hooks add ~50 tools and tens of thousands of cached tokens to every turn (measured 2026-08-26: 80 tools with user settings, 29 with project-only; a trivial run cost $0.54–0.87 versus $0.18); `--bare` — also skips `CLAUDE.md` discovery and hooks, which are the treatment |
 | Bounding a run | `--max-budget-usd` per run | `--max-turns` — not present in Claude Code 2.1.246 |
 
 ## 3. Layout
@@ -158,24 +158,24 @@ T4 and T5 are *expected* to touch shared code; their scope lists say so. "Out-of
 
 ### 5.2 Runner (`experiment/run.ps1`)
 
-Parameters: `-Copy sliced|layered|both` (default both), `-Task T1..T5|all` (default all), `-Repetitions <n>` (default 3), `-MaxBudgetUsd <n>` (default 3, per run), `-Model <name>` (default: the CLI default), `-ResultsDir` (default `experiment/results/<yyyyMMdd-HHmmss>`).
+Parameters: `-Copy sliced|layered|both` (default both), `-Task T1..T5|all` (default all), `-Repetitions <n>` (default 3), `-MaxBudgetUsd <n>` (default 8, per run), `-MaxTotalUsd <n>` (default 200; the runner stops once the running total exceeds it), `-Model <name>` (default: the CLI default), `-ResultsDir` (default `experiment/results/<yyyyMMdd-HHmmss>`), `-KeepRuns` (keep the temporary run directories), `-Yes` (skip the confirmation the runner asks for before more than one paid run), `-ClaudeCommand <path>` (default `claude`; point it at `experiment/stub/claude.cmd` to exercise the harness without paying).
 
 Per run (copy × task × repetition):
 
-1. **Fresh copy.** Copy the variant folder (excluding `bin/`, `obj/`, `*.db`, `.claude/worktrees/`) to a temporary directory outside the repository (`$env:TEMP\vsa-runs\<copy>-<task>-<n>\`); `git init`, commit everything as the baseline. The copy's `CLAUDE.md` and `.claude/` come with it; the repository root's `CLAUDE.md` does not.
+1. **Fresh copy.** Copy the variant folder (excluding `bin/`, `obj/`, `.jscpd-report/`, `.trx/`, `.claude/worktrees/`, `*.db*` and `.gate.log`) to a temporary directory outside the repository (`$env:TEMP\vsa-runs\<copy>-<task>-<n>\`); `git init`, commit everything as the baseline. The copy's `CLAUDE.md` and `.claude/` come with it; the repository root's `CLAUDE.md` does not.
 2. **Baseline build and test** once per copy per experiment (not per run) to confirm the starting state is green; abort the experiment if it is not.
 3. **Agent run.** In that directory, exactly:
 
     ```
-    claude -p "<prompt>" --output-format stream-json --verbose --no-session-persistence
+    claude -p --output-format stream-json --verbose --no-session-persistence
            --setting-sources project --permission-mode dontAsk
            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(dotnet *),Bash(git *)"
            --disallowedTools "Bash(cat *),Bash(head *),Bash(tail *),Bash(sed *),Bash(type *)"
-           --max-budget-usd <n> [--model <name>] < /dev/null > events.jsonl 2> stderr.txt
+           --max-budget-usd <n> [--model <name>] < prompt.md > events.jsonl 2> stderr.txt
     ```
 
-    `dontAsk` denies tools outside the allow-list without prompting, but it still permits built-in read-only shell commands — measured on 2026-08-26: `ls` and `cat` ran with only `Read` allowed — so the content-dumping commands are denied explicitly, which forces file contents through `Read` where the runner can count them; `ls`, `find` and `grep` through Bash are counted as search calls. The stdin redirect avoids the CLI's 3-second wait for piped input. Wall time is measured by the runner. Event field names are those observed for 2.1.246 (section 5.3); if the CLI changes, `Parse-Events.ps1` is the one file to update.
-4. **After the run,** in the same directory: `dotnet build` (warnings as errors), `dotnet test` per test project with results captured, `git add -A` followed by `git diff --cached --name-only` and `--numstat` against the baseline, `git diff > diff.patch`, `npx jscpd@4 src` (JSON reporter; the path is positional because jscpd's config `path` is a no-op on Windows) before (cached per copy) and after. The hooks in the copy's `.claude/settings.json` run as OS processes outside the permission system, so the tool allow-list does not constrain them — deliberate: the gate is part of the treatment.
+    `dontAsk` denies tools outside the allow-list without prompting, but it still permits built-in read-only shell commands — measured on 2026-08-26: `ls` and `cat` ran with only `Read` allowed — so the content-dumping commands are denied explicitly, which forces file contents through `Read` where the runner can count them; `ls`, `dir`, `find` and `grep` through Bash are counted as search calls. The prompt is piped on stdin from `prompt.md`, which is kept with the run's artefacts so a run is reproducible; the closed stdin also avoids the CLI's 3-second wait for piped input. Wall time is measured by the runner. Event field names are those observed for 2.1.246 (section 5.3); if the CLI changes, `Parse-Events.ps1` is the one file to update.
+4. **After the run,** in the same directory: `dotnet build` (warnings as errors), `dotnet test` per test project with results captured, `git add -A` followed by `git diff --cached --no-renames --name-only` and `--numstat` against the baseline commit (so an agent that commits is still measured; a moved file counts as two), `git diff --cached --no-renames <baseline> > diff.patch`, `npx jscpd@4 src` (JSON reporter; the path is positional because jscpd's config `path` is a no-op on Windows) before (cached per copy) and after. The hooks in the copy's `.claude/settings.json` run as OS processes outside the permission system, so the tool allow-list does not constrain them — deliberate: the gate is part of the treatment.
 5. **Record** one row in `results.csv`, keep the per-run artefacts, delete the temporary directory unless `-KeepRuns`.
 
 The runner never edits the copies in the repository; a failed or interrupted run leaves nothing behind except its temporary directory.
@@ -193,7 +193,7 @@ The runner never edits the copies in the repository; a failed or interrupted run
 | `files_out_of_scope` | changed paths not matching the task's scope globs for this copy |
 | `build_ok, behaviour_tests_passed, behaviour_tests_failed, arch_tests_passed, arch_tests_failed` | `dotnet build` / `dotnet test` exit codes and TRX summaries |
 | `dup_blocks_before, dup_blocks_after, dup_lines_pct_after` | jscpd JSON |
-| `notes` | runner: e.g. "agent asked a question and stopped", "budget hit" |
+| `notes` | runner: e.g. `ended=error_max_budget_usd`, `no result event`, `claude exit 1`, `N permission denials`, `agent committed (N commits)`, `no behaviour trx (build failed?)`, `harness error: …` |
 
 `REPORT.md` aggregates per copy × task: median and range of `files_read_distinct`, `input_tokens`, `cost_usd`, `files_changed`, `files_out_of_scope`, and the fraction of runs with `build_ok && behaviour_tests_failed == 0 && arch_tests_failed == 0`.
 
