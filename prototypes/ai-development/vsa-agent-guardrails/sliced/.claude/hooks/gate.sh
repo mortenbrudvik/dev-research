@@ -20,10 +20,12 @@ if [ "$event" = "Stop" ]; then
 fi
 
 for project in $projects; do
-  # -v q silences MSBuild; the console logger at normal verbosity keeps the assertion block (Expected/Actual).
-  if ! out=$(dotnet test "$project" --nologo -v q --logger "console;verbosity=normal" 2>&1); then
+  # -v q silences MSBuild; the console logger at normal verbosity keeps the assertion block (Expected/Actual);
+  # the Logging override keeps EF Core's SQL out of the output.
+  if ! out=$(Logging__LogLevel__Default=Warning dotnet test "$project" --nologo -v q --logger "console;verbosity=normal" 2>&1); then
     echo "$(stamp) $event exit=2 $project" >> .gate.log
-    printf '%s\n' "$out" | grep -v '^ *at ' | tail -60 >&2   # drop stack frames so the failure messages survive the cut
+    # Drop stack frames, per-test "Passed" lines and any remaining info: lines so the failure messages survive the cut.
+    printf '%s\n' "$out" | grep -v -e '^ *at ' -e '^ *Passed ' -e '^info: ' | tail -80 >&2
     exit 2
   fi
 done
