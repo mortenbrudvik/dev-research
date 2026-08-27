@@ -18,9 +18,9 @@ namespace Orders.Api.Platform.Persistence.Migrations
                     Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     CustomerId = table.Column<string>(type: "TEXT", maxLength: 100, nullable: false),
                     Status = table.Column<string>(type: "TEXT", maxLength: 20, nullable: false),
-                    CreatedAt = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ShippedAt = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    CancelledAt = table.Column<DateTimeOffset>(type: "TEXT", nullable: true)
+                    CreatedAt = table.Column<long>(type: "INTEGER", nullable: false),
+                    ShippedAt = table.Column<long>(type: "INTEGER", nullable: true),
+                    CancelledAt = table.Column<long>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {

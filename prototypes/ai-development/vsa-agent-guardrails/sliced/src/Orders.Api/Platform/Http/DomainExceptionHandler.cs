@@ -9,7 +9,7 @@ public sealed class DomainExceptionHandler : IExceptionHandler
 {
     public async ValueTask<bool> TryHandleAsync(HttpContext httpContext, Exception exception, CancellationToken cancellationToken)
     {
-        if (exception is not DomainException)
+        if (exception is not DomainException || httpContext.Response.HasStarted)
         {
             return false;
         }
@@ -19,7 +19,7 @@ public sealed class DomainExceptionHandler : IExceptionHandler
             Status = StatusCodes.Status409Conflict,
             Title = "Business rule violated",
             Detail = exception.Message,
-        }, cancellationToken);
+        }, options: null, contentType: "application/problem+json", cancellationToken);   // same media type as Results.Problem
         return true;
     }
 }

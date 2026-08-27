@@ -11,7 +11,7 @@ using Orders.Api.Platform.Persistence;
 namespace Orders.Api.Platform.Persistence.Migrations
 {
     [DbContext(typeof(OrdersDbContext))]
-    [Migration("20260827052148_InitialCreate")]
+    [Migration("20260827053659_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -26,19 +26,19 @@ namespace Orders.Api.Platform.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("CancelledAt")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CancelledAt")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("CustomerId")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("ShippedAt")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("ShippedAt")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Status")
                         .IsRequired()

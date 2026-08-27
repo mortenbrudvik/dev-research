@@ -1,6 +1,10 @@
 namespace Orders.Api.Platform.Endpoints;
 
-/// <summary>Each slice exposes one endpoint class that maps its route(s).</summary>
+/// <summary>
+/// Each slice exposes one endpoint class that maps its route(s). Implementations are created with
+/// Activator.CreateInstance, so they need a public parameterless constructor: take dependencies as
+/// parameters of the route delegate, not of the class.
+/// </summary>
 public interface IEndpoint
 {
     void Map(IEndpointRouteBuilder app);
@@ -16,7 +20,8 @@ public static class EndpointExtensions
         var handlers = typeof(EndpointExtensions).Assembly.GetTypes()
             .Where(t => t.IsClass && !t.IsAbstract
                         && t.Name.EndsWith("Handler", StringComparison.Ordinal)
-                        && t.Namespace?.StartsWith(FeaturesNamespace, StringComparison.Ordinal) == true);
+                        && (t.Namespace == FeaturesNamespace
+                            || t.Namespace?.StartsWith(FeaturesNamespace + ".", StringComparison.Ordinal) == true));
         foreach (var handler in handlers)
         {
             services.AddScoped(handler);

@@ -6,6 +6,13 @@ using Orders.Api.Platform.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Fail at startup, not on first request, when a handler depends on something that is not registered.
+builder.Host.UseDefaultServiceProvider(options =>
+{
+    options.ValidateOnBuild = true;
+    options.ValidateScopes = true;
+});
+
 builder.Services.AddDbContext<OrdersDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Orders") ?? "Data Source=orders.db"));
 builder.Services.AddSingleton(TimeProvider.System);
