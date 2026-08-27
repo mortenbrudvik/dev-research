@@ -3191,7 +3191,7 @@ git commit -m "vsa-agent-guardrails(experiment): five task prompts"
 
 The library holds every pure function the runner needs: `ConvertFrom-AgentEvents` (stream-json → metrics), `Get-TaskSpec`, `ConvertTo-GlobRegex`, `Test-PathInScope`, `Read-TrxSummary`, `Read-JscpdSummary`. The fixture mirrors the event shapes observed on Claude Code 2.1.246 (spec §5.3).
 
-Every function here is a measuring instrument, so each one fails loudly rather than returning a plausible number: a missing `permission_denials` key is 0 and not 1, a transcript that stops mid-stream sets `saw_result = $false` instead of leaving zeros that read as a clean run, a re-emitted `tool_use` id is counted once, a `.trx` with no `<Counters>` reports `found = $false` with `$null` counts rather than "0 failures", an absent scope list is an empty list and never "everything is in scope", and every `-Path` is resolved against `$PWD` because the runner works inside `Push-Location`.
+Every function here is a measuring instrument, so each one fails loudly rather than returning a plausible number: a missing `permission_denials` key is 0 and not 1, a transcript that stops mid-stream sets `saw_result = $false` instead of leaving zeros that read as a clean run, a re-emitted `tool_use` id is counted once, a `.trx` with no `<Counters>` reports `found = $false` with `$null` counts rather than "0 failures", an absent scope list is an empty list and never "everything is in scope", the models are read from the `result` event's `modelUsage` keys because that is the only place the CLI records what it actually billed, and every `-Path` is resolved against `$PWD` because the runner works inside `Push-Location`.
 
 - [ ] **Step 1: Fixtures**
 
@@ -3207,7 +3207,7 @@ Every function here is a measuring instrument, so each one fails loudly rather t
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The same assistant message, re-emitted with its thinking block."},{"type":"tool_use","id":"toolu_3","name":"Read","input":{"file_path":"c:\\run\\src\\a.cs"}},{"type":"tool_use","id":"toolu_4","name":"Grep","input":{"pattern":"class","path":"src"}},{"type":"tool_use","id":"toolu_5","name":"Edit","input":{"file_path":"C:\\run\\src\\A.cs","old_string":"class A {}","new_string":"class A { }"}}]},"session_id":"s1"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_6","name":"Read","input":{"file_path":"C:/run/src/A.cs"}}]},"session_id":"s1"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_7","name":"Rea
-{"type":"result","subtype":"success","is_error":false,"duration_ms":19662,"duration_api_ms":8241,"num_turns":5,"result":"done","session_id":"s1","total_cost_usd":0.17785,"terminal_reason":"completed","stop_reason":"end_turn","usage":{"input_tokens":10,"cache_creation_input_tokens":8569,"cache_read_input_tokens":135344,"output_tokens":939},"permission_denials":[{"tool_name":"Bash","tool_input":{"command":"cat x"}}],"modelUsage":{"claude-fable-5":{"inputTokens":10}}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":19662,"duration_api_ms":8241,"num_turns":5,"result":"done","session_id":"s1","total_cost_usd":0.17785,"terminal_reason":"completed","stop_reason":"end_turn","usage":{"input_tokens":10,"cache_creation_input_tokens":8569,"cache_read_input_tokens":135344,"output_tokens":939},"permission_denials":[{"tool_name":"Bash","tool_input":{"command":"cat x"}}],"modelUsage":{"claude-haiku-4-5":{"inputTokens":3,"outputTokens":1},"claude-fable-5":{"inputTokens":10,"outputTokens":939}}}
 ```
 
 `experiment/fixtures/sample-task.md`:
@@ -3270,6 +3270,7 @@ Assert-Equal 'completed' $m.terminal_reason 'terminal_reason'
 Assert-Equal 'end_turn' $m.stop_reason 'stop_reason'
 Assert-Equal $false $m.is_error 'is_error'
 Assert-Equal 1 $m.permission_denials 'permission_denials'
+Assert-Equal 'claude-fable-5+claude-haiku-4-5' $m.models 'models (modelUsage keys, sorted, not in source order)'
 
 # A transcript that stops before the result event: every result field stays $null, saw_result is $false.
 $truncated = New-TempFile 'parse-events-truncated.jsonl' ((Get-Content -LiteralPath "$fixtures/sample-events.jsonl" | Select-Object -First 6) -join "`n")
@@ -3280,6 +3281,7 @@ Assert-Equal $null $tr.terminal_reason 'truncated: terminal_reason is null'
 Assert-Equal $null $tr.stop_reason 'truncated: stop_reason is null'
 Assert-Equal $null $tr.cost_usd 'truncated: cost_usd is null'
 Assert-Equal $null $tr.is_error 'truncated: is_error is null'
+Assert-Equal $null $tr.models 'truncated: models is null'
 Assert-Equal 0 $tr.permission_denials 'truncated: permission_denials'
 Assert-Equal 0 $tr.skipped_lines 'truncated: skipped_lines'
 Assert-Equal 2 $tr.read_calls 'truncated: tool calls up to the cut are still counted'
@@ -3291,6 +3293,7 @@ $nd = ConvertFrom-AgentEvents -Path $noDenials
 Assert-Equal 0 $nd.permission_denials 'result without permission_denials -> 0'
 Assert-Equal $true $nd.saw_result 'result without permission_denials -> saw_result'
 Assert-Equal $null $nd.terminal_reason 'result without terminal_reason -> null'
+Assert-Equal $null $nd.models 'result without modelUsage -> models is null'
 Remove-Item -LiteralPath $noDenials
 
 $spec = Get-TaskSpec -Path "$fixtures/sample-task.md"
@@ -3416,7 +3419,7 @@ function ConvertFrom-AgentEvents {
         bash_calls = 0; bash_search_calls = 0; files_read_distinct = 0
         cost_usd = $null; num_turns = $null; duration_ms = $null; duration_api_ms = $null
         input_tokens = $null; output_tokens = $null; cache_read_tokens = $null; cache_create_tokens = $null
-        ended = $null; terminal_reason = $null; stop_reason = $null; is_error = $null
+        ended = $null; terminal_reason = $null; stop_reason = $null; is_error = $null; models = $null
         permission_denials = 0; saw_result = $false; skipped_lines = 0
     }
     $files = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -3468,6 +3471,12 @@ function ConvertFrom-AgentEvents {
                 $m.cache_create_tokens = Get-Prop $usage 'cache_creation_input_tokens'
                 $denials = Get-Prop $e 'permission_denials'
                 $m.permission_denials = if ($null -eq $denials) { 0 } else { @($denials).Count }   # @($null).Count is 1
+                # The models that actually ran are the keys of modelUsage - there is no model field on the result
+                # event - and a run bills more than one when part of the work goes to a small model.
+                $modelUsage = Get-Prop $e 'modelUsage'
+                $modelNames = @()
+                if ($null -ne $modelUsage) { $modelNames = @($modelUsage.PSObject.Properties.Name) }
+                $m.models = if ($modelNames.Count -eq 0) { $null } else { ($modelNames | Sort-Object) -join '+' }
             }
         }
     }
@@ -3591,7 +3600,7 @@ function Read-JscpdSummary {
 - [ ] **Step 5: Run the test**
 
 Run: `pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/Test-ParseEvents.ps1`
-Expected: 68 lines each starting with `ok`, then `Test-ParseEvents: all assertions passed`, exit code 0. In order: 23 assertions on the fixture transcript (the call counters, `skipped_lines (one truncated event line)`, `saw_result`, and the `result` fields including `terminal_reason` and `stop_reason`); 9 `truncated:` assertions; 3 on a result event carrying neither `permission_denials` nor `terminal_reason`; 5 task-spec assertions; 2 `relative path:` assertions; 4 scope-list assertions; 4 glob assertions; 10 `trx` assertions; 8 `jscpd` assertions. Any `FAIL` line names the metric and prints expected and actual.
+Expected: 71 lines each starting with `ok`, then `Test-ParseEvents: all assertions passed`, exit code 0. In order: 24 assertions on the fixture transcript (the call counters, `skipped_lines (one truncated event line)`, `saw_result`, and the `result` fields including `terminal_reason`, `stop_reason` and `models`, whose two `modelUsage` keys are in the fixture in the wrong order so the sort is exercised); 10 `truncated:` assertions; 4 on a result event carrying none of `permission_denials`, `terminal_reason` or `modelUsage`; 5 task-spec assertions; 2 `relative path:` assertions; 4 scope-list assertions; 4 glob assertions; 10 `trx` assertions; 8 `jscpd` assertions. Any `FAIL` line names the metric and prints expected and actual.
 
 - [ ] **Step 6: Commit**
 
@@ -3872,7 +3881,9 @@ try {
                     if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
 
                     $row = New-ResultRow @{
-                        copy = $copyName; task = $spec.id; rep = $rep; model = ($Model ? $Model : 'default')
+                        # What ran, not what was asked for: with no -Model the CLI picks, and the transcript's
+                        # modelUsage keys are the only record of it. 'default' only when there is no transcript.
+                        copy = $copyName; task = $spec.id; rep = $rep; model = if ($Model) { $Model } else { $m.models ?? 'default' }
                         started_at = ($startedAt.ToString('s') + 'Z'); wall_ms = $agent.wall_ms
                         cost_usd = $m.cost_usd; num_turns = $m.num_turns; duration_ms = $m.duration_ms; duration_api_ms = $m.duration_api_ms
                         input_tokens = $m.input_tokens; output_tokens = $m.output_tokens
@@ -3986,7 +3997,10 @@ $transcript = @(
     '{"type":"result","subtype":"success","total_cost_usd":0.1234,"num_turns":7,"duration_ms":12345,' +
     '"duration_api_ms":9876,"is_error":false,"terminal_reason":"completed","stop_reason":"end_turn",' +
     '"permission_denials":[],"usage":{"input_tokens":1200,"output_tokens":340,' +
-    '"cache_read_input_tokens":50000,"cache_creation_input_tokens":2000}}'
+    '"cache_read_input_tokens":50000,"cache_creation_input_tokens":2000},' +
+    # Two obviously fake ids, the larger one second, so a row from the stub shows the sorted join the real
+    # CLI's modelUsage keys produce.
+    '"modelUsage":{"stub-model-fast":{"inputTokens":3},"stub-model":{"inputTokens":1200}}}'
 )
 foreach ($line in $transcript) { [Console]::Out.WriteLine($line) }
 exit 0
@@ -4033,8 +4047,9 @@ Expected (a few minutes; the baseline check builds and tests each copy before th
 ```
 
 Both CSV rows must have `gate_blocks` 2, `gate_blocks_build` 1, `files_changed` 2, `lines_added` 2, `files_out_of_scope` 1,
-`build_ok` True, `notes` exactly `1 unparsable event line` (the stub prints one line that is not JSON on purpose) and no
-`agent committed`. Each run folder must hold `prompt.md`, `events.jsonl`, `stderr.txt`, `build.txt`, `test-output.txt`,
+`build_ok` True, `model` `stub-model+stub-model-fast` (the sorted `modelUsage` keys of the stub's result line — with `-Model`
+given, that parameter wins instead), `notes` exactly `1 unparsable event line` (the stub prints one line that is not JSON on
+purpose) and no `agent committed`. Each run folder must hold `prompt.md`, `events.jsonl`, `stderr.txt`, `build.txt`, `test-output.txt`,
 `diff.patch` (not empty), `out-of-scope.txt` (`stub-notes.txt`), `gate.log` and `jscpd.json`. In a kept run directory,
 `git ls-files --eol .claude/hooks/gate.sh` must print `i/lf`: a CRLF hook fails under Git Bash with MSB1003.
 
@@ -4132,7 +4147,7 @@ rm -rf "$TEMP/vsa-runs"
 ```markdown
 # vsa-agent-guardrails — experiment report
 
-**Run:** (results folder name) · **Model:** (from the `model` column) · **Repetitions:** (n) · **Claude Code:** (version) · **Date:** (date)
+**Run:** (results folder name) · **Model:** (the `model` column: the model ids the runs actually billed) · **Repetitions:** (n) · **Claude Code:** (version) · **Date:** (date)
 
 ## Setup
 
@@ -4409,7 +4424,8 @@ Requires PowerShell 7, Node 22 (`npx jscpd@4`), Git, Git Bash (the hooks are `sh
 
 Options: `-Copy sliced|layered|both`, `-Task T1[,T3]` (an unknown id fails before anything is copied or spent), `-Repetitions n`,
 `-MaxBudgetUsd` (default 8; the per-run cap handed to `claude` itself), `-MaxTotalUsd` (default 200; stops the experiment as soon
-as the rows add up past it), `-Model` (default: whatever the CLI is configured with), `-ResultsDir`, `-KeepRuns` (leave the
+as the rows add up past it), `-Model` (default: whatever the CLI picks — either way the `model` column records the ids the run
+actually billed, taken from the transcript), `-ResultsDir`, `-KeepRuns` (leave the
 temporary copies behind for inspection), `-Yes` (skip the typed confirmation — required for unattended runs of more than one
 repetition) and `-ClaudeCommand` (which CLI to drive; `experiment/stub/claude.cmd` exercises the whole harness for nothing and is
 how to check a change to `run.ps1` before paying for one).
