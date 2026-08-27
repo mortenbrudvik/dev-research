@@ -25,6 +25,8 @@
 - Handlers are discovered by name (`*Handler` under `Features`) and endpoints by `IEndpoint`; nothing is
   registered in `Program.cs` per slice. An endpoint class needs a public parameterless constructor — take
   dependencies as parameters of the route delegate, not of the class.
+- `Program.cs` is the composition root: service registration and `app.MapEndpoints()` only. Do not add routes
+  there — an architecture test reads the file and fails on any `MapGet`/`MapPost`/... call in it.
 - An endpoint that binds a request body adds `.AddEndpointFilter<ValidationFilter<TRequest>>()`, which requires
   a public `<Request>Validator` (`AbstractValidator<TRequest>`) in the slice; the filter throws if none is registered.
 - Every slice ships with a test class in `tests/Orders.SliceTests/<UseCase>Tests.cs` that sends the request
