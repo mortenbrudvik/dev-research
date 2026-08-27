@@ -34,12 +34,13 @@ Requires PowerShell 7, Node 22 (`npx jscpd@4`), Git, Git Bash (the hooks are `sh
     pwsh experiment/Test-Parity.ps1                                       # both copies answer identically, free
     pwsh experiment/run.ps1 -Task T1 -Repetitions 1 -Yes -ClaudeCommand experiment/stub/claude.cmd   # the harness itself, free
     pwsh experiment/run.ps1 -Copy sliced -Task T1 -Repetitions 1          # smoke run, one paid agent run (~$1)
-    pwsh experiment/run.ps1 -Yes                                          # both copies, five tasks, 3 repetitions (~$20–40)
+    pwsh experiment/run.ps1 -Yes -Model claude-opus-5[1m]                 # both copies, five tasks, 3 repetitions (~$20–40)
 
 Options: `-Copy sliced|layered|both`, `-Task T1[,T3]` (an unknown id fails before anything is copied or spent), `-Repetitions n`,
 `-MaxBudgetUsd` (default 8; the per-run cap handed to `claude` itself), `-MaxTotalUsd` (default 200; stops the experiment as soon
-as the rows add up past it), `-Model` (default: whatever the CLI picks — either way the `model` column records the model the run
-actually started with, read from the transcript's init event, and `models_billed` every model it was billed for),
+as the rows add up past it), `-Model` (default: whatever the CLI picks; pin it for a real experiment, because the runner stops if
+the primary model changes between rows — either way the `model` column records the model the run actually started with, read from
+the transcript's init event, and `models_billed` every model it was billed for),
 `-ResultsDir`, `-KeepRuns` (leave the temporary copies behind for inspection), `-Yes` (skip the typed confirmation — required
 when more than one run is planned, that is copies × tasks × repetitions, so also for the stub line above) and `-ClaudeCommand`
 (which CLI to drive; `experiment/stub/claude.cmd` exercises the whole harness for nothing and is how to check a change to
