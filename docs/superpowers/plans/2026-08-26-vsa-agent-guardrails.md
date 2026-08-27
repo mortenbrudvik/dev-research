@@ -3191,7 +3191,7 @@ git commit -m "vsa-agent-guardrails(experiment): five task prompts"
 
 The library holds every pure function the runner needs: `ConvertFrom-AgentEvents` (stream-json → metrics), `Get-TaskSpec`, `ConvertTo-GlobRegex`, `Test-PathInScope`, `Read-TrxSummary`, `Read-JscpdSummary`. The fixture mirrors the event shapes observed on Claude Code 2.1.246 (spec §5.3).
 
-Every function here is a measuring instrument, so each one fails loudly rather than returning a plausible number: a missing `permission_denials` key is 0 and not 1, a transcript that stops mid-stream sets `saw_result = $false` instead of leaving zeros that read as a clean run, a re-emitted `tool_use` id is counted once, a `.trx` with no `<Counters>` reports `found = $false` with `$null` counts rather than "0 failures", an absent scope list is an empty list and never "everything is in scope", the models are read from the `result` event's `modelUsage` keys because that is the only place the CLI records what it actually billed, and every `-Path` is resolved against `$PWD` because the runner works inside `Push-Location`.
+Every function here is a measuring instrument, so each one fails loudly rather than returning a plausible number: a missing `permission_denials` key is 0 and not 1, a transcript that stops mid-stream sets `saw_result = $false` instead of leaving zeros that read as a clean run, a re-emitted `tool_use` id is counted once, a `.trx` with no `<Counters>` reports `found = $false` with `$null` counts rather than "0 failures", an absent scope list is an empty list and never "everything is in scope", a tool call the permission system denied is counted as a denial and nowhere else because it never ran, the model is read from the `system`/`init` event and the billed models from the `result` event's `modelUsage` keys because those are the only places the CLI records them, and every `-Path` is resolved against `$PWD` because the runner works inside `Push-Location`.
 
 - [ ] **Step 1: Fixtures**
 
@@ -3207,7 +3207,7 @@ Every function here is a measuring instrument, so each one fails loudly rather t
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The same assistant message, re-emitted with its thinking block."},{"type":"tool_use","id":"toolu_3","name":"Read","input":{"file_path":"c:\\run\\src\\a.cs"}},{"type":"tool_use","id":"toolu_4","name":"Grep","input":{"pattern":"class","path":"src"}},{"type":"tool_use","id":"toolu_5","name":"Edit","input":{"file_path":"C:\\run\\src\\A.cs","old_string":"class A {}","new_string":"class A { }"}}]},"session_id":"s1"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_6","name":"Read","input":{"file_path":"C:/run/src/A.cs"}}]},"session_id":"s1"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_7","name":"Rea
-{"type":"result","subtype":"success","is_error":false,"duration_ms":19662,"duration_api_ms":8241,"num_turns":5,"result":"done","session_id":"s1","total_cost_usd":0.17785,"terminal_reason":"completed","stop_reason":"end_turn","usage":{"input_tokens":10,"cache_creation_input_tokens":8569,"cache_read_input_tokens":135344,"output_tokens":939},"permission_denials":[{"tool_name":"Bash","tool_input":{"command":"cat x"}}],"modelUsage":{"claude-haiku-4-5":{"inputTokens":3,"outputTokens":1},"claude-fable-5":{"inputTokens":10,"outputTokens":939}}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":19662,"duration_api_ms":8241,"num_turns":5,"result":"done","session_id":"s1","total_cost_usd":0.17785,"terminal_reason":"completed","stop_reason":"end_turn","usage":{"input_tokens":10,"cache_creation_input_tokens":8569,"cache_read_input_tokens":135344,"output_tokens":939},"permission_denials":[{"tool_name":"Bash","tool_input":{"command":"cat x"}},{"tool_name":"Bash","tool_use_id":"toolu_2","tool_input":{"command":"ls -la src"}}],"modelUsage":{"claude-haiku-4-5":{"inputTokens":3,"outputTokens":1},"claude-fable-5":{"inputTokens":10,"outputTokens":939}}}
 ```
 
 `experiment/fixtures/sample-task.md`:
@@ -3253,8 +3253,8 @@ Assert-Equal 1 $m.grep_calls 'grep_calls (re-emitted tool_use id counted once)'
 Assert-Equal 0 $m.glob_calls 'glob_calls'
 Assert-Equal 1 $m.edit_calls 'edit_calls (re-emitted tool_use id counted once)'
 Assert-Equal 0 $m.write_calls 'write_calls'
-Assert-Equal 1 $m.bash_calls 'bash_calls'
-Assert-Equal 1 $m.bash_search_calls 'bash_search_calls'
+Assert-Equal 0 $m.bash_calls 'bash_calls (the one Bash call was denied, so it never ran)'
+Assert-Equal 0 $m.bash_search_calls 'bash_search_calls (a denied `ls` is not a search)'
 Assert-Equal 1 $m.skipped_lines 'skipped_lines (one truncated event line)'
 Assert-Equal $true $m.saw_result 'saw_result'
 Assert-Equal 0.17785 $m.cost_usd 'cost_usd'
@@ -3269,7 +3269,8 @@ Assert-Equal 'success' $m.ended 'ended'
 Assert-Equal 'completed' $m.terminal_reason 'terminal_reason'
 Assert-Equal 'end_turn' $m.stop_reason 'stop_reason'
 Assert-Equal $false $m.is_error 'is_error'
-Assert-Equal 1 $m.permission_denials 'permission_denials'
+Assert-Equal 2 $m.permission_denials 'permission_denials (a denial without a tool_use_id still counts)'
+Assert-Equal 'claude-fable-5' $m.model 'model (the model named by the init event)'
 Assert-Equal 'claude-fable-5+claude-haiku-4-5' $m.models 'models (modelUsage keys, sorted, not in source order)'
 
 # A transcript that stops before the result event: every result field stays $null, saw_result is $false.
@@ -3285,6 +3286,8 @@ Assert-Equal $null $tr.models 'truncated: models is null'
 Assert-Equal 0 $tr.permission_denials 'truncated: permission_denials'
 Assert-Equal 0 $tr.skipped_lines 'truncated: skipped_lines'
 Assert-Equal 2 $tr.read_calls 'truncated: tool calls up to the cut are still counted'
+Assert-Equal 1 $tr.bash_calls 'truncated: with no result event nothing is denied, so the Bash call counts'
+Assert-Equal 'claude-fable-5' $tr.model 'truncated: model is set (the init event comes first)'
 Remove-Item -LiteralPath $truncated
 
 # A result event without a permission_denials key must be 0, not 1 (@($null).Count is 1).
@@ -3294,6 +3297,7 @@ Assert-Equal 0 $nd.permission_denials 'result without permission_denials -> 0'
 Assert-Equal $true $nd.saw_result 'result without permission_denials -> saw_result'
 Assert-Equal $null $nd.terminal_reason 'result without terminal_reason -> null'
 Assert-Equal $null $nd.models 'result without modelUsage -> models is null'
+Assert-Equal $null $nd.model 'transcript without an init event -> model is null'
 Remove-Item -LiteralPath $noDenials
 
 $spec = Get-TaskSpec -Path "$fixtures/sample-task.md"
@@ -3419,16 +3423,25 @@ function ConvertFrom-AgentEvents {
         bash_calls = 0; bash_search_calls = 0; files_read_distinct = 0
         cost_usd = $null; num_turns = $null; duration_ms = $null; duration_api_ms = $null
         input_tokens = $null; output_tokens = $null; cache_read_tokens = $null; cache_create_tokens = $null
-        ended = $null; terminal_reason = $null; stop_reason = $null; is_error = $null; models = $null
+        ended = $null; terminal_reason = $null; stop_reason = $null; is_error = $null
+        model = $null; models = $null
         permission_denials = 0; saw_result = $false; skipped_lines = 0
     }
     $files = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $seenToolIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    # The tool calls are counted after the whole transcript is read: the permission denials that say which
+    # of them never ran arrive in the result event, at the end.
+    $toolUses = [System.Collections.Generic.List[object]]::new()
+    $deniedIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 
     foreach ($line in [System.IO.File]::ReadLines($Path)) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         try { $e = $line | ConvertFrom-Json } catch { $m.skipped_lines++; continue }
         switch (Get-Prop $e 'type') {
+            'system' {
+                # The init event is the only place the CLI names the model it chose when -Model was not given.
+                if ((Get-Prop $e 'subtype') -eq 'init' -and $null -eq $m.model) { $m.model = Get-Prop $e 'model' }
+            }
             'assistant' {
                 foreach ($block in @(Get-Prop (Get-Prop $e 'message') 'content')) {
                     if ((Get-Prop $block 'type') -ne 'tool_use') { continue }
@@ -3436,22 +3449,7 @@ function ConvertFrom-AgentEvents {
                     # once with the tool_use block), so count each tool_use id at most once.
                     $id = Get-Prop $block 'id'
                     if ($id -and -not $seenToolIds.Add([string]$id)) { continue }
-                    $toolInput = Get-Prop $block 'input'
-                    switch (Get-Prop $block 'name') {
-                        'Read'  {
-                            $m.read_calls++
-                            $f = Get-Prop $toolInput 'file_path'
-                            if ($f) { [void]$files.Add(([string]$f -replace '\\', '/')) }   # same file, either separator
-                        }
-                        'Grep'  { $m.grep_calls++ }
-                        'Glob'  { $m.glob_calls++ }
-                        'Edit'  { $m.edit_calls++ }
-                        'Write' { $m.write_calls++ }
-                        'Bash'  {
-                            $m.bash_calls++
-                            if ([string](Get-Prop $toolInput 'command') -match '^\s*(ls|dir|find|grep|rg|git\s+grep)\b') { $m.bash_search_calls++ }
-                        }
-                    }
+                    $toolUses.Add([pscustomobject]@{ id = $id; name = (Get-Prop $block 'name'); input = (Get-Prop $block 'input') })
                 }
             }
             'result' {
@@ -3471,12 +3469,37 @@ function ConvertFrom-AgentEvents {
                 $m.cache_create_tokens = Get-Prop $usage 'cache_creation_input_tokens'
                 $denials = Get-Prop $e 'permission_denials'
                 $m.permission_denials = if ($null -eq $denials) { 0 } else { @($denials).Count }   # @($null).Count is 1
+                if ($null -ne $denials) {
+                    # A denied call is an attempt, not a call: it is counted as a denial and nowhere else.
+                    foreach ($d in @($denials)) {
+                        $deniedId = Get-Prop $d 'tool_use_id'
+                        if ($deniedId) { [void]$deniedIds.Add([string]$deniedId) }
+                    }
+                }
                 # The models that actually ran are the keys of modelUsage - there is no model field on the result
                 # event - and a run bills more than one when part of the work goes to a small model.
                 $modelUsage = Get-Prop $e 'modelUsage'
                 $modelNames = @()
                 if ($null -ne $modelUsage) { $modelNames = @($modelUsage.PSObject.Properties.Name) }
                 $m.models = if ($modelNames.Count -eq 0) { $null } else { ($modelNames | Sort-Object) -join '+' }
+            }
+        }
+    }
+    foreach ($tool in $toolUses) {
+        if ($tool.id -and $deniedIds.Contains([string]$tool.id)) { continue }   # blocked before it ran
+        switch ($tool.name) {
+            'Read'  {
+                $m.read_calls++
+                $f = Get-Prop $tool.input 'file_path'
+                if ($f) { [void]$files.Add(([string]$f -replace '\\', '/')) }   # same file, either separator
+            }
+            'Grep'  { $m.grep_calls++ }
+            'Glob'  { $m.glob_calls++ }
+            'Edit'  { $m.edit_calls++ }
+            'Write' { $m.write_calls++ }
+            'Bash'  {
+                $m.bash_calls++
+                if ([string](Get-Prop $tool.input 'command') -match '^\s*(ls|dir|find|grep|rg|git\s+grep)\b') { $m.bash_search_calls++ }
             }
         }
     }
@@ -3600,7 +3623,7 @@ function Read-JscpdSummary {
 - [ ] **Step 5: Run the test**
 
 Run: `pwsh prototypes/ai-development/vsa-agent-guardrails/experiment/Test-ParseEvents.ps1`
-Expected: 71 lines each starting with `ok`, then `Test-ParseEvents: all assertions passed`, exit code 0. In order: 24 assertions on the fixture transcript (the call counters, `skipped_lines (one truncated event line)`, `saw_result`, and the `result` fields including `terminal_reason`, `stop_reason` and `models`, whose two `modelUsage` keys are in the fixture in the wrong order so the sort is exercised); 10 `truncated:` assertions; 4 on a result event carrying none of `permission_denials`, `terminal_reason` or `modelUsage`; 5 task-spec assertions; 2 `relative path:` assertions; 4 scope-list assertions; 4 glob assertions; 10 `trx` assertions; 8 `jscpd` assertions. Any `FAIL` line names the metric and prints expected and actual.
+Expected: 75 lines each starting with `ok`, then `Test-ParseEvents: all assertions passed`, exit code 0. In order: 25 assertions on the fixture transcript (the call counters — the fixture's one `Bash` call is in the result event's `permission_denials`, so `bash_calls` and `bash_search_calls` are 0 while `permission_denials` is 2 — `skipped_lines (one truncated event line)`, `saw_result`, and the `result` fields including `terminal_reason`, `stop_reason`, `model` and `models`, whose two `modelUsage` keys are in the fixture in the wrong order so the sort is exercised); 12 `truncated:` assertions, including the control that the same `Bash` call *is* counted when no result event denies it; 5 on a result event carrying none of `permission_denials`, `terminal_reason` or `modelUsage`, and no init event; 5 task-spec assertions; 2 `relative path:` assertions; 4 scope-list assertions; 4 glob assertions; 10 `trx` assertions; 8 `jscpd` assertions. Any `FAIL` line names the metric and prints expected and actual.
 
 - [ ] **Step 6: Commit**
 
@@ -3696,7 +3719,7 @@ function New-ResultRow([hashtable]$values) {
     # One fixed column set for every row. Export-Csv -Append rejects an object whose properties differ from the
     # header, so a harness-error row must carry the same columns, in the same order, with the rest left empty.
     $names = @(
-            'copy', 'task', 'rep', 'model', 'started_at', 'wall_ms',
+            'copy', 'task', 'rep', 'model', 'models_billed', 'started_at', 'wall_ms',
             'cost_usd', 'num_turns', 'duration_ms', 'duration_api_ms',
             'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_create_tokens',
             'ended', 'terminal_reason', 'stop_reason', 'is_error', 'permission_denials', 'skipped_lines',
@@ -3724,6 +3747,16 @@ function New-RunDirectory([string]$copyName, [string]$runName) {
     $src = Join-Path $root $copyName
     $dst = Join-Path $runsRoot $runName
     if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+    # Claude Code keeps per-project memory under %USERPROFILE%\.claude\projects\<sanitised working directory>,
+    # and this run directory's name is deterministic, so without this every rep 1 would start with the memory
+    # the last experiment's rep 1 left behind - a treatment nobody asked for.
+    $memoryRoot = Join-Path $env:USERPROFILE '.claude/projects'
+    if (Test-Path $memoryRoot) {
+        foreach ($stale in @(Get-ChildItem -Path $memoryRoot -Directory -Filter "*-vsa-runs-$runName" -ErrorAction SilentlyContinue)) {
+            Remove-Item -Recurse -Force $stale.FullName
+            Write-Host "stale agent memory removed: $($stale.FullName)"
+        }
+    }
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
     & robocopy $src $dst /E /XD bin obj worktrees .jscpd-report .trx /XF *.db *.db-shm *.db-wal .gate.log /NFL /NDL /NJH /NJS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy $src -> $dst failed with exit code $LASTEXITCODE" }
@@ -3794,6 +3827,9 @@ try {
             throw "Baseline tests fail for $copyName; aborting.`n$($archBase.output)`n$($behBase.output)"
         }
         $dupBefore = Invoke-Jscpd $base
+        # Kept in memory because the baseline copy is about to go: every run folder gets its own copy, so
+        # dup_blocks_before can be re-derived from a results folder alone.
+        $dupBeforeJson = Get-Content -LiteralPath (Join-Path $base '.jscpd-report/jscpd-report.json') -Raw -ErrorAction SilentlyContinue
         if (-not $KeepRuns) { Remove-Item -Recurse -Force $base }
 
         foreach ($taskFile in $taskFiles) {
@@ -3835,6 +3871,11 @@ try {
                     Set-Content -Path (Join-Path $artefacts 'test-output.txt') -Value ($arch.output + "`n`n" + $beh.output)
                     $archSum = Read-TrxSummary -Path $arch.trx
                     $behSum = Read-TrxSummary -Path $beh.trx
+                    # The trx files and the "before" duplication report travel with the row, so every count in it
+                    # can be re-derived from the results folder after the run directory is gone.
+                    New-Item -ItemType Directory -Force -Path (Join-Path $artefacts 'trx') | Out-Null
+                    Copy-Item -Path (Join-Path $dir '.trx/*.trx') -Destination (Join-Path $artefacts 'trx') -ErrorAction SilentlyContinue
+                    if ($dupBeforeJson) { Set-Content -Path (Join-Path $artefacts 'jscpd-before.json') -Value $dupBeforeJson -Encoding utf8 }
 
                     Push-Location $dir
                     try {
@@ -3881,9 +3922,10 @@ try {
                     if ($dupBefore.sources -eq 0 -or $dupAfter.sources -eq 0) { $notes += 'jscpd analysed no files' }
 
                     $row = New-ResultRow @{
-                        # What ran, not what was asked for: with no -Model the CLI picks, and the transcript's
-                        # modelUsage keys are the only record of it. 'default' only when there is no transcript.
-                        copy = $copyName; task = $spec.id; rep = $rep; model = if ($Model) { $Model } else { $m.models ?? 'default' }
+                        # What ran, not what was asked for: the init event names the model the CLI chose, and
+                        # modelUsage names everything it billed. -Model is only the fallback, 'default' the last one.
+                        copy = $copyName; task = $spec.id; rep = $rep
+                        model = $m.model ?? ($Model ? $Model : 'default'); models_billed = $m.models
                         started_at = ($startedAt.ToString('s') + 'Z'); wall_ms = $agent.wall_ms
                         cost_usd = $m.cost_usd; num_turns = $m.num_turns; duration_ms = $m.duration_ms; duration_api_ms = $m.duration_api_ms
                         input_tokens = $m.input_tokens; output_tokens = $m.output_tokens
@@ -3991,7 +4033,7 @@ $toolUse = @(
     '{"type":"tool_use","id":"t9","name":"Bash","input":{"command":"ls src"}}'
 ) -join ','
 $transcript = @(
-    '{"type":"system","subtype":"init","cwd":"."}'
+    '{"type":"system","subtype":"init","cwd":".","model":"stub-model"}'
     '{"type":"assistant","message":{"content":[' + $toolUse + ']}}'
     'a line that is not JSON, so that skipped_lines is exercised too'
     '{"type":"result","subtype":"success","total_cost_usd":0.1234,"num_turns":7,"duration_ms":12345,' +
@@ -4046,11 +4088,18 @@ Expected (a few minutes; the baseline check builds and tests each copy before th
    cost $0.12  turns 7  files_read 2  changed 2  out_of_scope 1  build True  behaviour 14/14  arch 9/9  total so far $0.25
 ```
 
-Both CSV rows must have `gate_blocks` 2, `gate_blocks_build` 1, `files_changed` 2, `lines_added` 2, `files_out_of_scope` 1,
-`build_ok` True, `model` `stub-model+stub-model-fast` (the sorted `modelUsage` keys of the stub's result line — with `-Model`
-given, that parameter wins instead), `notes` exactly `1 unparsable event line` (the stub prints one line that is not JSON on
-purpose) and no `agent committed`. Each run folder must hold `prompt.md`, `events.jsonl`, `stderr.txt`, `build.txt`, `test-output.txt`,
-`diff.patch` (not empty), `out-of-scope.txt` (`stub-notes.txt`), `gate.log` and `jscpd.json`. In a kept run directory,
+Both CSV rows must have 44 columns with `gate_blocks` 2, `gate_blocks_build` 1, `files_changed` 2, `lines_added` 2,
+`files_out_of_scope` 1, `build_ok` True, `model` `stub-model` (from the stub's init event, which is where the CLI names the model
+it chose — `-Model` is only the fallback when a transcript names none), `models_billed` `stub-model+stub-model-fast` (the sorted
+`modelUsage` keys of the stub's result line), `notes` exactly `1 unparsable event line` (the stub prints one line that is not JSON
+on purpose) and no `agent committed`. Each run folder must hold `prompt.md`, `events.jsonl`, `stderr.txt`, `build.txt`,
+`test-output.txt`, `diff.patch` (not empty), `out-of-scope.txt` (`stub-notes.txt`), `gate.log`, `jscpd.json`, `jscpd-before.json`
+and `trx/arch.trx` + `trx/behaviour.trx` — with those, `Read-TrxSummary` and `Read-JscpdSummary` re-derive the row's test counts
+and `dup_blocks_before` from the results folder alone, once the run directory is gone. A run whose name has been used before also
+prints `stale agent memory removed: …`: Claude Code keeps per-project memory under `%USERPROFILE%\.claude\projects\<sanitised
+working directory>` and the run directory names repeat every experiment, so the runner deletes that directory before it copies.
+Check it with a dummy: `pwsh -NoProfile -Command 'New-Item -ItemType Directory "$env:USERPROFILE/.claude/projects/C--dummy-vsa-runs-layered-T1-1"'`
+before the run, and confirm the line appears and the directory is gone after it. In a kept run directory,
 `git ls-files --eol .claude/hooks/gate.sh` must print `i/lf`: a CRLF hook fails under Git Bash with MSB1003.
 
 - [ ] **Step 6: Check the two paths that silently lost data before**
@@ -4424,7 +4473,7 @@ Requires the .NET SDK 10.0.100 or later. SQLite is embedded; no database server 
     cd sliced          # or layered
     dotnet build --nologo
     dotnet test --nologo                       # behaviour tests + architecture tests (+ negative controls)
-    dotnet run --project src/Orders.Api        # http://localhost:5000, creates orders.db in the project folder
+    dotnet run --project src/Orders.Api        # the port in src/Orders.Api/Properties/launchSettings.json (5162 sliced, 5161 layered); creates orders.db next to the project
 
 ## Run the experiment
 
@@ -4438,11 +4487,12 @@ Requires PowerShell 7, Node 22 (`npx jscpd@4`), Git, Git Bash (the hooks are `sh
 
 Options: `-Copy sliced|layered|both`, `-Task T1[,T3]` (an unknown id fails before anything is copied or spent), `-Repetitions n`,
 `-MaxBudgetUsd` (default 8; the per-run cap handed to `claude` itself), `-MaxTotalUsd` (default 200; stops the experiment as soon
-as the rows add up past it), `-Model` (default: whatever the CLI picks — either way the `model` column records the ids the run
-actually billed, taken from the transcript), `-ResultsDir`, `-KeepRuns` (leave the
-temporary copies behind for inspection), `-Yes` (skip the typed confirmation — required for unattended runs of more than one
-repetition) and `-ClaudeCommand` (which CLI to drive; `experiment/stub/claude.cmd` exercises the whole harness for nothing and is
-how to check a change to `run.ps1` before paying for one).
+as the rows add up past it), `-Model` (default: whatever the CLI picks — either way the `model` column records the model the run
+actually started with, read from the transcript's init event, and `models_billed` every model it was billed for),
+`-ResultsDir`, `-KeepRuns` (leave the temporary copies behind for inspection), `-Yes` (skip the typed confirmation — required
+when more than one run is planned, that is copies × tasks × repetitions, so also for the stub line above) and `-ClaudeCommand`
+(which CLI to drive; `experiment/stub/claude.cmd` exercises the whole harness for nothing and is how to check a change to
+`run.ps1` before paying for one).
 
 Each run copies the variant to `%TEMP%\vsa-runs\`, gives Claude Code the task with project settings only (no user-level plugins or
 hooks), an explicit tool allow-list and a budget cap, then builds, tests, diffs against the copy's baseline commit, runs jscpd, and
