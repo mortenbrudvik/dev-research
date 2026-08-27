@@ -24,7 +24,7 @@ Requires the .NET SDK 10.0.100 or later. SQLite is embedded; no database server 
     cd sliced          # or layered
     dotnet build --nologo
     dotnet test --nologo                       # behaviour tests + architecture tests (+ negative controls)
-    dotnet run --project src/Orders.Api        # http://localhost:5000, creates orders.db in the project folder
+    dotnet run --project src/Orders.Api        # the port in src/Orders.Api/Properties/launchSettings.json (5162 sliced, 5161 layered); creates orders.db next to the project
 
 ## Run the experiment
 
@@ -38,11 +38,12 @@ Requires PowerShell 7, Node 22 (`npx jscpd@4`), Git, Git Bash (the hooks are `sh
 
 Options: `-Copy sliced|layered|both`, `-Task T1[,T3]` (an unknown id fails before anything is copied or spent), `-Repetitions n`,
 `-MaxBudgetUsd` (default 8; the per-run cap handed to `claude` itself), `-MaxTotalUsd` (default 200; stops the experiment as soon
-as the rows add up past it), `-Model` (default: whatever the CLI picks — either way the `model` column records the ids the run
-actually billed, taken from the transcript), `-ResultsDir`, `-KeepRuns` (leave the
-temporary copies behind for inspection), `-Yes` (skip the typed confirmation — required for unattended runs of more than one
-repetition) and `-ClaudeCommand` (which CLI to drive; `experiment/stub/claude.cmd` exercises the whole harness for nothing and is
-how to check a change to `run.ps1` before paying for one).
+as the rows add up past it), `-Model` (default: whatever the CLI picks — either way the `model` column records the model the run
+actually started with, read from the transcript's init event, and `models_billed` every model it was billed for),
+`-ResultsDir`, `-KeepRuns` (leave the temporary copies behind for inspection), `-Yes` (skip the typed confirmation — required
+when more than one run is planned, that is copies × tasks × repetitions, so also for the stub line above) and `-ClaudeCommand`
+(which CLI to drive; `experiment/stub/claude.cmd` exercises the whole harness for nothing and is how to check a change to
+`run.ps1` before paying for one).
 
 Each run copies the variant to `%TEMP%\vsa-runs\`, gives Claude Code the task with project settings only (no user-level plugins or
 hooks), an explicit tool allow-list and a budget cap, then builds, tests, diffs against the copy's baseline commit, runs jscpd, and
