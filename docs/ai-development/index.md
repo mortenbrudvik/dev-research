@@ -20,4 +20,6 @@ Building software with large language models at the centre, and building softwar
 
 ## Prototypes
 
-None yet.
+- [vsa-agent-guardrails](https://github.com/mortenbrudvik/dev-research/tree/main/prototypes/ai-development/vsa-agent-guardrails)
+
+    The same orders API built twice — as vertical slices and as layers — with identical tests and the same guardrails, and a harness that gives Claude Code the same five tasks against each copy. 30 runs; the results are in [its report](https://github.com/mortenbrudvik/dev-research/blob/main/prototypes/ai-development/vsa-agent-guardrails/experiment/REPORT.md) and summarised in [section 10 of the guide](vertical-slice-architecture.md#10-applying-it-a-starter-checklist-and-a-prototype).
