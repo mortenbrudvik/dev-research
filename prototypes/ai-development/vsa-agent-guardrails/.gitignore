@@ -6,6 +6,9 @@
 .gate.log
 # jscpd output
 .jscpd-report/
-# experiment runs (keep only the committed example)
+# experiment runs: keep the committed example and every run's results.csv, not the transcripts and artefacts
 experiment/results/*
 !experiment/results/example-results.csv
+!experiment/results/*/
+experiment/results/*/*
+!experiment/results/*/results.csv
