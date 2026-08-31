@@ -3094,8 +3094,8 @@ Front matter is `key: value` lines between `---` fences; `scope.sliced` and `sco
 id: T1
 title: Ship an order
 kind: slice-local
-scope.sliced: src/Orders.Api/Features/Ship*, src/Orders.Api/Features/Ship*/**, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Application/Orders/Commands/Ship*, src/Orders.Application/Orders/Commands/Ship*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/OrdersEndpoints.cs, tests/Orders.IntegrationTests/**
+scope.sliced: src/Orders.Api/Features/Ship*, src/Orders.Api/Features/Ship*/**, tests/Orders.SliceTests/**, CLAUDE.md
+scope.layered: src/Orders.Application/Orders/Commands/Ship*, src/Orders.Application/Orders/Commands/Ship*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/OrdersEndpoints.cs, tests/Orders.IntegrationTests/**, CLAUDE.md
 ---
 Add the ability to ship an order.
 
@@ -3114,8 +3114,8 @@ Add tests covering all three outcomes, following the conventions of the existing
 id: T2
 title: Shipped orders cannot be cancelled
 kind: slice-local
-scope.sliced: src/Orders.Api/Features/CancelOrder/**, src/Orders.Api/Domain/CancellationPolicy.cs, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Application/Orders/Commands/CancelOrder/**, src/Orders.Domain/Policies/CancellationPolicy.cs, src/Orders.Api/Endpoints/OrdersEndpoints.cs, tests/Orders.IntegrationTests/**
+scope.sliced: src/Orders.Api/Features/CancelOrder/**, src/Orders.Api/Domain/CancellationPolicy.cs, tests/Orders.SliceTests/**, CLAUDE.md
+scope.layered: src/Orders.Application/Orders/Commands/CancelOrder/**, src/Orders.Domain/Policies/CancellationPolicy.cs, src/Orders.Api/Endpoints/OrdersEndpoints.cs, tests/Orders.IntegrationTests/**, CLAUDE.md
 ---
 Shipped orders can no longer be cancelled.
 
@@ -3131,8 +3131,8 @@ Update or add tests so that the suite reflects the new rule. Run the tests befor
 id: T3
 title: List a customer's orders
 kind: slice-local
-scope.sliced: src/Orders.Api/Features/*Customer*, src/Orders.Api/Features/*Customer*/**, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Application/Orders/Queries/*Customer*, src/Orders.Application/Orders/Queries/*Customer*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/**, src/Orders.Api/Program.cs, tests/Orders.IntegrationTests/**
+scope.sliced: src/Orders.Api/Features/*Customer*, src/Orders.Api/Features/*Customer*/**, tests/Orders.SliceTests/**, CLAUDE.md
+scope.layered: src/Orders.Application/Orders/Queries/*Customer*, src/Orders.Application/Orders/Queries/*Customer*/**, src/Orders.Application/DependencyInjection.cs, src/Orders.Application/Orders/OrderDtos.cs, src/Orders.Api/Endpoints/**, src/Orders.Api/Program.cs, tests/Orders.IntegrationTests/**, CLAUDE.md
 ---
 Add a way to list one customer's orders.
 
@@ -3148,8 +3148,8 @@ Add tests. Run them before you finish.
 id: T4
 title: Audit trail for every command
 kind: cross-cutting
-scope.sliced: src/Orders.Api/Domain/**, src/Orders.Api/Platform/**, src/Orders.Api/Features/**, src/Orders.Api/Program.cs, src/Orders.Api/Orders.Api.csproj, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Domain/**, src/Orders.Application/**, src/Orders.Infrastructure/**, src/Orders.Api/Common/**, src/Orders.Api/Endpoints/**, src/Orders.Api/Program.cs, tests/Orders.IntegrationTests/**
+scope.sliced: src/Orders.Api/Domain/**, src/Orders.Api/Platform/**, src/Orders.Api/Features/**, src/Orders.Api/Program.cs, src/Orders.Api/Orders.Api.csproj, tests/Orders.SliceTests/**, CLAUDE.md
+scope.layered: src/Orders.Domain/**, src/Orders.Application/**, src/Orders.Infrastructure/**, src/Orders.Api/Common/**, src/Orders.Api/Endpoints/**, src/Orders.Api/Program.cs, src/Orders.Api/Orders.Api.csproj, tests/Orders.IntegrationTests/**, CLAUDE.md
 ---
 Record an audit trail for every operation that changes an order — creating and cancelling today, and any operation added later: who (the value of an `X-User` request header, or "anonymous" when absent), what (the operation name), when, and the order id. An entry must be persisted in the same transaction as the change it records.
 
@@ -3165,8 +3165,8 @@ Add tests showing that creating and then cancelling an order produces two entrie
 id: T5
 title: Optional notes on an order
 kind: persistence
-scope.sliced: src/Orders.Api/Domain/Order.cs, src/Orders.Api/Platform/Persistence/**, src/Orders.Api/Features/CreateOrder/**, src/Orders.Api/Features/GetOrder/**, tests/Orders.SliceTests/**
-scope.layered: src/Orders.Domain/Entities/Order.cs, src/Orders.Infrastructure/Persistence/**, src/Orders.Application/Orders/Commands/CreateOrder/**, src/Orders.Application/Orders/Queries/GetOrder/**, src/Orders.Application/Orders/OrderDtos.cs, tests/Orders.IntegrationTests/**
+scope.sliced: src/Orders.Api/Domain/Order.cs, src/Orders.Api/Platform/Persistence/**, src/Orders.Api/Features/CreateOrder/**, src/Orders.Api/Features/GetOrder/**, tests/Orders.SliceTests/**, CLAUDE.md
+scope.layered: src/Orders.Domain/Entities/Order.cs, src/Orders.Infrastructure/Persistence/**, src/Orders.Application/Orders/Commands/CreateOrder/**, src/Orders.Application/Orders/Queries/GetOrder/**, src/Orders.Application/Orders/OrderDtos.cs, tests/Orders.IntegrationTests/**, CLAUDE.md
 ---
 Orders get an optional free-text `notes` field of at most 500 characters.
 
