@@ -11,6 +11,7 @@ The design rationale is in `docs/superpowers/specs/2026-08-25-repo-structure-des
 ## Commands
 
 ```
+.\serve.ps1                                         # creates .venv if needed, opens http://127.0.0.1:8000, live reload
 python -m venv .venv && .venv\Scripts\activate      # Git Bash: source .venv/Scripts/activate
 pip install -r requirements.txt
 mkdocs serve                                        # http://127.0.0.1:8000, live reload

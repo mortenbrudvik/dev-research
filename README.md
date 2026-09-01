@@ -11,6 +11,7 @@ Each guide is one canonical document per question, revised in place as the topic
 ```
 dev-research/
 ├── README.md                     this file
+├── serve.ps1                     local wiki: creates .venv, installs deps, mkdocs serve --open
 ├── mkdocs.yml                    site configuration, including the nav
 ├── requirements.txt              Python packages that build the site
 ├── .gitignore                    ignore rules for Node, Python, .NET, secrets, and the site output
@@ -58,6 +59,12 @@ dev-research/
 Create `prototypes/<topic>/<name>/` with its own `README.md` (what it demonstrates, how to run it, which guide section it illustrates), its own tooling and lockfile. There is no root-level build or workspace. Link it from the topic's `index.md`. Details in [`prototypes/README.md`](prototypes/README.md).
 
 ## Working on the site locally
+
+```
+.\serve.ps1                      # creates .venv if needed, installs deps, opens http://127.0.0.1:8000 with live reload
+```
+
+Equivalent by hand:
 
 ```
 python -m venv .venv
