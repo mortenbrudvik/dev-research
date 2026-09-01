@@ -277,6 +277,10 @@ try {
                     if ($agent.exit -ne 0) { $notes += "claude exit $($agent.exit)" }
                     if (-not $m.saw_result) { $notes += 'no result event' }        # transcript stops mid-stream: cost and tokens are unknown, not zero
                     elseif ($m.ended -ne 'success') { $notes += "ended=$($m.ended)" }
+                    # A provider error (a rate limit, say) still reports subtype "success", so `ended` alone reads as a clean
+                    # run. It is not one: the agent may never have worked, and an untouched tree builds and passes every test,
+                    # which would otherwise score as green. is_error and terminal_reason are the fields that tell the truth.
+                    if ($m.is_error -eq $true) { $notes += "run failed: is_error, terminal_reason=$($m.terminal_reason)" }
                     if ($m.skipped_lines -gt 0) { $notes += "$($m.skipped_lines) unparsable event line$(if ($m.skipped_lines -ne 1) { 's' })" }
                     if ($m.permission_denials -gt 0) { $notes += "$($m.permission_denials) permission denials" }
                     if ($agentCommits -gt 0) { $notes += "agent committed ($agentCommits commit$(if ($agentCommits -ne 1) { 's' }))" }
