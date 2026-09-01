@@ -41,10 +41,73 @@ T4 1.28M → 1.67M (+31 %), T5 671k → 695k (+3 %).
 This is the reverse of what the caveat below predicted — the sliced copy's mandated slice mirroring did not out-duplicate the layered copy
 on any task.
 
-**Gate blocks.** T1 layered 1 per run, T2 layered 1 per run, T4 sliced 0–3, T4 layered 4–6, T5 1 per run in both; sliced T1–T3 zero.
-**30 of the 31 blocks were compile errors on a half-written change.** Exactly one was a real rule violation: `layered-T4-1` hit
-`PostToolUse exit=2 tests/Orders.ArchitectureTests test` — a layering rule caught mid-task on the cross-cutting change — and the run
-still finished green, so the agent recovered from it.
+**Out-of-scope edits, and what they were.** Six of the 30 runs touched a file outside their task's scope globs, and the six are three
+unlike things. Five are T2's `Order` entity — all three layered runs and two of three sliced (`sliced-T2-2` is the exception, and is the
+existence proof that the task is completable within the globs: three files, all in scope, green, and it says why it stopped —
+"so the shipped rule lives in one place rather than being duplicated in the entity"). Of those five, three (`sliced-T2-1`, `sliced-T2-3`,
+`layered-T2-3`) inserted a second `Status == Shipped` throw beside the existing one, leaving the same user-facing sentence in two files;
+two (`layered-T2-1`, `layered-T2-2`) added no guard at all but rewired the existing one to call the policy that already depends on `Order`
+— a de-duplicating refactor, the opposite move. None of the five throws can fire: the handler consults the policy first, and `ApiFixture`
+reaches `Cancel` only from `Pending`. All five announced the `Domain/` edit in their final message, as both copies' `CLAUDE.md` require.
+
+The sixth is the opposite kind of edit. `layered-T4-1` changed `tests/Orders.ArchitectureTests/LayerRules.cs`, which T4's `scope.layered`
+does not list — the only test glob it names is `tests/Orders.IntegrationTests/**` — adding `Every_command_handler_writes_to_the_audit_trail`
+plus a companion test pinning that rule's own patterns to the two real handlers, taking the layered suite from 9 rules to 11. It is the
+most direct answer any run gave to the prompt's "and any operation added later", and the only run of the 30 to touch an architecture test
+or a `CLAUDE.md` at all.
+
+**So `files_out_of_scope` counts path matches, not defects.** The same value of 1 marks a duplicated guard, a de-duplicating refactor and
+a strengthened guardrail; the file has to be read before the number means anything.
+
+**Gate blocks.** T1 layered 1 per run, T2 layered 1 per run, T4 sliced 0–3, T4 layered 4–6, T5 1 per run in both; sliced T1–T3 and
+layered T3 zero — 31 in total, **24 of them in the layered arm against 7 in the sliced one**, the same "more places to touch" effect the
+T4 section below describes. 30 were build-stage failures, where the tests never ran: the hook labels a block `build` when its output
+never reaches `Test run for`, so the bucket covers restore, MSBuild and analyzer failures, not only compiler diagnostics. Nearly all are
+the same shape — a declaration and its use, or a statement and its `using`, landing in two separate edits. Both copies set
+`TreatWarningsAsErrors`, so an unused `using` or an unread constructor parameter is itself a build error and *neither order* of a two-edit
+change avoids a block; `layered-T4-3` said so mid-run ("Expected mid-change build errors — continuing"). The counts track how many edits a
+change needed, not how carelessly it was made.
+
+Exactly one block was a rule violation, and it was deliberate. In `layered-T4-1`, with both suites already green, the agent removed the
+`AuditTrail` dependency from `CancelOrderCommandHandler` to check that an architecture rule *it had itself added* 40 seconds earlier could
+fail — first the `audit.Record(...)` call (which the compiler caught instead: `CS9113: Parameter 'audit' is unread`), then the constructor
+parameter, which fired `Every_command_handler_writes_to_the_audit_trail` (`PostToolUse exit=2 tests/Orders.ArchitectureTests test`,
+13:23:08). It restored both and the gate was green again at 13:23:20. Two of the 30 build blocks belong to that same episode, so **28 of
+the 31 were unintended**. No gate block in the 30 runs was an unintended violation of an architecture rule, and none involved a rule that
+shipped with either copy. The hook's stderr reaches no run's `events.jsonl` — a blocked edit's tool result is the ordinary success string
+with no diagnostic attached — so what the agent was shown is not in the artefacts; only what it did next, plus its own paraphrase in
+several runs.
+
+## Why T4 separated the copies
+
+The 13-vs-17 median decomposes, and most of it cancels. Every one of the six T4 diffs carries the same three generated EF migration files
+(191 added lines), produced by one `dotnet ef migrations add` and hand-edited in no run, and one new test file. Netting out migrations,
+tests and docs leaves authored production files: sliced 9 / 9 / 8, layered 13 / 13 / 13.
+
+The four-file difference is the *same four files* in all three layered runs, and none appears in any sliced run:
+
+1. `Orders.Application/Common/Interfaces/ICurrentUser.cs` (`ICurrentActor.cs` in reps 2–3) — an actor port.
+2. `Orders.Api/Common/HeaderCurrentUser.cs` (`HttpCurrentActor.cs`) — the API-side adapter that reads `X-User`.
+3. `Orders.Application/Common/Interfaces/IOrdersDbContext.cs` — one line, declaring the audit `DbSet` a second time, because handlers see
+   the context only through the abstraction.
+4. `Orders.Application/DependencyInjection.cs` — the second composition point, since the Application module cannot name an API type.
+
+Files 1 and 2 exist because `Orders.Application.csproj` references only `Orders.Domain`, so `IHttpContextAccessor` is unreachable from where
+the recorder lives; the sliced copy is allowed to put HTTP concerns in `Platform/`, so the port/adapter pair collapses into one 20-line
+class. On the read side the arms trade evenly — layered appends to the shared `OrderDtos.cs` and `OrdersEndpoints.cs`, sliced adds two new
+files inside its new slice.
+
+Two deflations belong with that headline. **File count is not code volume:** authored production lines run sliced 125 / 182 / 195 against
+layered 149 / 136 / 135, so the sliced copy wrote *more* production code in two of three runs, and total added lines are a wash. What T4
+shows is that the same feature needed four more *places* in the layered copy, not more work. **And only turns separate the arms run by
+run** (layered 55–61 vs sliced 47–51): cost and cache reads separate them on medians only, because `layered-T4-2` built the same thirteen
+places for $1.55 and 1.04M cache reads — less than any sliced run.
+
+Mechanism does not explain the gap, and the runs disagree about mechanism: `sliced-T4-2` and `sliced-T4-3` used an EF `SaveChanges`
+interceptor and edited no existing use case, while the other four wrote explicit `audit.Record(...)` calls into both handlers.
+`sliced-T4-1` and `layered-T4-1` chose the *same* mechanism and still differ 9 versus 13 production files, which is the cleanest comparison
+in the set. A fourth sliced attempt (`results/20260831-132529/sliced-T4-1`, an interceptor, 13 files, in scope, no gate blocks) was cut off
+by the rate limit and is excluded — an exclusion that trims only the sliced arm, since no layered attempt was lost after doing real work.
 
 ## Hypotheses
 
@@ -53,8 +116,9 @@ still finished green, so the agent recovered from it.
   re-read 24 % less context per run (458k vs 569k cache reads), took fewer turns (25 vs 27) and cost 19 % less ($0.65 vs $0.77). The
   direction is consistent across all three tasks on cost, cache reads and turns. The magnitudes are small — one file, 5 % of ingested
   context — and only cost and cache reads exceed 15 %. **The out-of-scope half of H1 is not supported at all:** both copies recorded zero
-  out-of-scope edits on T1 and T3, and exactly one on T2 — the same file in both copies (the `Order` entity, which the agent chose to touch
-  beyond the cancellation policy the globs anticipated). With guardrails in place, neither architecture produced sprawl.
+  out-of-scope edits on T1 and T3, and one on five of the six T2 runs — the `Order` entity in both copies, which the agent chose to touch
+  beyond the cancellation policy the globs anticipated, and which the out-of-scope paragraph above shows is not a single kind of edit.
+  With guardrails in place, neither architecture produced sprawl.
 - **H2** (T4 and T5: no advantage for `sliced/`): **not supported for T4, supported for T5.** The cross-cutting audit-trail task produced the
   *largest* gap in the experiment, all favouring the sliced copy: 22 % lower cost ($1.70 vs $2.07), 18 % fewer turns (49 vs 58), 31 % fewer
   files changed (13 vs 17) and 31 % fewer cache reads. The persistence task was a tie — layered read one file fewer, cost 6 % more, and both
@@ -95,7 +159,11 @@ same copy × task are spread out by the task → repetition → copy run order, 
 T4's requirement that the trail cover "any operation added later" has no test that can fail, so a generic mechanism and two hard-coded writes
 score identically; in the pilot both copies chose a generic mechanism, but the metric cannot distinguish them.
 The hook's blocking output does not appear in `events.jsonl`, so a gate block's cost in turns and tokens cannot be audited from the artefacts,
-only its occurrence from `.gate.log`.
+only its occurrence from `.gate.log` and, in several runs, the agent's own paraphrase of what it was told.
+The six T2 and six T4 diffs were read closely; the other 18 were spot-checked, so no exhaustive defect audit stands behind any claim here.
+One latent defect was found, and it is in in-scope code on both sides of the comparison: `layered-T2-1` leaves `CanCancel` and its refusal
+reason as independent expressions, so a fourth `OrderStatus` would yield a null conflict and a 200 with a null body, while `sliced-T2-2`
+and `sliced-T2-3` write the policy as a deny-list, so a fourth status would become cancellable rather than refused.
 Provider rate limits cost this experiment its first attempt at T4 and T5: 12 runs returned HTTP 429 with `terminal_reason: api_error`, and
 one of them (`sliced-T4-1`, $1.88, 50 turns) was censored mid-flight rather than failing outright. All 12 were re-run to completion the same
 day on the same model and CLI version, and the failed rows are excluded from every number above. Note for anyone reusing this harness: a
