@@ -4,9 +4,9 @@ title: AI development
 
 # AI development
 
-Building software with large language models at the centre, and building software *with* them: the control-flow primitives of agentic systems (agent loops and state graphs), the frameworks that implement them, what it takes to run them in production — evaluation, cost, human oversight, security, and memory — and how to structure a codebase so that coding agents work well in it. The scope is the engineering of agentic systems and of AI-assisted development, not model training.
+Building software with large language models at the centre, and building software *with* them: the control-flow primitives of agentic systems (agent loops and state graphs), the frameworks that implement them, what it takes to run them in production — evaluation, cost, human oversight, security, and memory — how to structure a codebase so that coding agents work well in it, and how a personal knowledge base becomes the context layer that both its owner and their agents work from. The scope is the engineering of agentic systems and of AI-assisted development, not model training.
 
-**Status:** four guides, current as of September 2026.
+**Status:** five guides as of September 2026 — four current, one draft awaiting review.
 
 ## Guides
 
@@ -25,6 +25,10 @@ Building software with large language models at the centre, and building softwar
 - [Isolated WezTerm for Grok and Claude on Windows](wezterm-for-ai-clis-on-windows.md)
 
     Why Windows Terminal hangs every window when Grok or Claude redraws, and how to run each AI TUI in its own WezTerm process so one freeze cannot take the rest.
+
+- [The Second Brain and AI](second-brain-and-ai.md)
+
+    What a second brain was meant to be, the three things large language models change about it, which memory architectures hold up at personal scale, what the evidence says about offloading thinking to a tool, and how to build one that serves both you and your agents.
 
 ## Prototypes
 

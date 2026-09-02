@@ -10,4 +10,4 @@ The guides distil research sweeps into something to act on: what a concept is, w
 
 ## Topics
 
-- [AI development](ai-development/index.md) — control flow in agentic AI systems (loops, graphs, frameworks, production, security, memory, protocols), codebase structure for AI-assisted development (vertical slices as guardrails for coding agents), and running coding-agent TUIs on Windows without a shared-process terminal hang.
+- [AI development](ai-development/index.md) — control flow in agentic AI systems (loops, graphs, frameworks, production, security, memory, protocols), codebase structure for AI-assisted development (vertical slices as guardrails for coding agents), running coding-agent TUIs on Windows without a shared-process terminal hang, and the second brain as the context layer shared by a developer and their agents.
