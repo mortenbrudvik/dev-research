@@ -6,7 +6,7 @@ title: AI development
 
 Building software with large language models at the centre, and building software *with* them: the control-flow primitives of agentic systems (agent loops and state graphs), the frameworks that implement them, what it takes to run them in production — evaluation, cost, human oversight, security, and memory — and how to structure a codebase so that coding agents work well in it. The scope is the engineering of agentic systems and of AI-assisted development, not model training.
 
-**Status:** three guides, current as of September 2026.
+**Status:** four guides, current as of September 2026.
 
 ## Guides
 
@@ -21,6 +21,10 @@ Building software with large language models at the centre, and building softwar
 - [Generating Diagrams from a Codebase](generating-diagrams-from-code.md)
 
     Why the popular AI diagram skills do not read your code, what the three families of diagram tooling actually do, and how to publish an architecture diagram that stays true as the code moves.
+
+- [Isolated WezTerm for Grok and Claude on Windows](wezterm-for-ai-clis-on-windows.md)
+
+    Why Windows Terminal hangs every window when Grok or Claude redraws, and how to run each AI TUI in its own WezTerm process so one freeze cannot take the rest.
 
 ## Prototypes
 

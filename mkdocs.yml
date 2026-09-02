@@ -15,6 +15,7 @@ nav:
       - ai-development/loops-and-graphs.md
       - ai-development/vertical-slice-architecture.md
       - ai-development/generating-diagrams-from-code.md
+      - ai-development/wezterm-for-ai-clis-on-windows.md
 
 hooks:
   - hooks/github_parity.py   # fails the strict build on GitHub-only markdown that would render wrong
