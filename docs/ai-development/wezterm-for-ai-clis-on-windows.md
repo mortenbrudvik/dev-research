@@ -114,7 +114,8 @@ Nightly downloads are not hash-verified by Scoop. That is expected.
 ### File map
 
 ```text
-%USERPROFILE%\.wezterm.lua              WezTerm config (Lua)
+%USERPROFILE%\.config\wezterm\wezterm.lua  WezTerm config (Lua; Grok /doctor looks here)
+%USERPROFILE%\.wezterm.lua                 Fallback that loads the file above
 %USERPROFILE%\.wezterm\README.md        Local copy of this setup
 %USERPROFILE%\.wezterm\launch-ai.ps1    PowerShell functions (wez-grok, …)
 %USERPROFILE%\.wezterm\start-ai.ps1     Start-menu / shortcut entry point
@@ -228,7 +229,7 @@ Or inside Claude: `/tui fullscreen`. That is an Ink renderer issue, not a WezTer
 
 ## 7. WezTerm config
 
-File: `%USERPROFILE%\.wezterm.lua`. WezTerm watches this file and reloads most options on save.
+File: `%USERPROFILE%\.config\wezterm\wezterm.lua`. Grok `/doctor` looks here for `enable_kitty_keyboard`. `%USERPROFILE%\.wezterm.lua` loads that file if WezTerm falls back to it. WezTerm watches the loaded file and reloads most options on save.
 
 | Setting | Value | Why |
 |---|---|---|
@@ -237,8 +238,20 @@ File: `%USERPROFILE%\.wezterm.lua`. WezTerm watches this file and reloads most o
 | `scrollback_lines` | `20000` | Long agent transcripts |
 | `front_end` | `WebGpu` | DirectX 12 / Vulkan path, independent of WT AtlasEngine |
 | `term` | `xterm-256color` | Safe TERM on Windows (no wezterm terminfo) |
+| `initial_cols` / `initial_rows` | `160` / `48` | Default 80×24 is a postage stamp on 4K; Grok paints a black pane at that size |
+| `gui-startup` | `maximize()` | Each `wezterm start` window fills the monitor |
 | `default_prog` | `pwsh.exe -NoLogo` | New tabs without an explicit command |
 | `launch_menu` | pwsh / Grok / Claude / cmd | Convenience inside a window |
+
+The maximize hook must spawn with the `cmd` from `wezterm start`, or Grok never runs:
+
+```lua
+local mux = wezterm.mux
+wezterm.on('gui-startup', function(cmd)
+  local _tab, _pane, window = mux.spawn_window(cmd or {})
+  window:gui_window():maximize()
+end)
+```
 
 If a WezTerm window itself hangs on the GPU path, edit the config:
 
@@ -259,6 +272,14 @@ If **only one** WezTerm window is frozen and the others still paint, isolation i
 
 If **all** WezTerm windows freeze together, isolation was bypassed or the hang is below the emulator (GPU driver / DWM / ConPTY). Note GPU CPU, DWM CPU, and whether restarting `dwm.exe` recovers the desktop.
 
+### Grok opens as a tiny black window
+
+WezTerm's default size is 80×24 cells. On a 4K display that is a small floating window, and Grok's fullscreen TUI does not paint — the pane stays black, the tab still says `grok.exe`. Resize or maximize and the TUI appears.
+
+The config now starts at 160×48 and maximizes on `gui-startup`. That only applies to **new** `wezterm start` processes (`wez-grok`, Start menu shortcut, etc.). This window will not pick it up; close it and launch again.
+
+If a new window is still 80×24, the Lua file failed to load (see [Config is ignored](#config-is-ignored)).
+
 ### `wez-grok` is not recognized
 
 The function is loaded from the PowerShell profile. Open a new tab, or:
@@ -270,18 +291,18 @@ Get-Command wez-grok
 
 ### Grok Ctrl+Enter does not interject
 
-Kitty keyboard must be on and Win32 input off:
+Kitty keyboard is on so Grok can negotiate CSI-u when ConPTY allows it. On native Windows, ConPTY flattens CSI-u to a bare CR, so **Win32 input mode must stay on** — that is the encoding ConPTY actually preserves Shift+Enter with. Alt+Enter is unbound from WezTerm fullscreen so Grok's fallback newline chord reaches the PTY.
 
 ```lua
 config.enable_kitty_keyboard = true
-config.allow_win32_input_mode = false
+config.allow_win32_input_mode = true
 ```
 
-Restart that WezTerm window (config reload may not be enough for keyboard protocol). Run `/doctor` again.
+`allow_win32_input_mode` is negotiated when the pane starts. Changing it requires a **new** `wez-grok` window, not a config reload. The `terminal.wezterm-kitty` banner can still appear (runtime probe); Shift+Enter should insert a newline anyway.
 
 ### Config is ignored
 
-WezTerm loads `%USERPROFILE%\.wezterm.lua` first. A `wezterm.lua` next to `wezterm-gui.exe` is only for portable/thumb-drive mode. Check the debug overlay (`Ctrl+Shift+L` on nightly) if a Lua error falls back to defaults.
+WezTerm loads `%USERPROFILE%\.config\wezterm\wezterm.lua` before `%USERPROFILE%\.wezterm.lua`. A `wezterm.lua` next to `wezterm-gui.exe` is only for portable/thumb-drive mode. Check the debug overlay (`Ctrl+Shift+L` on nightly) if a Lua error falls back to defaults.
 
 ```powershell
 wezterm ls-fonts
@@ -307,7 +328,7 @@ Known WezTerm-on-Windows GPU issue after sleep. Relaunch that one window. If it 
 scoop uninstall wezterm-nightly
 ```
 
-Then remove `%USERPROFILE%\.wezterm.lua`, `%USERPROFILE%\.wezterm\`, the Start menu folder `WezTerm AI`, and the three-line source block from both PowerShell profiles. Grok and Claude binaries are unchanged.
+Then remove `%USERPROFILE%\.config\wezterm\`, `%USERPROFILE%\.wezterm.lua`, `%USERPROFILE%\.wezterm\`, the Start menu folder `WezTerm AI`, and the three-line source block from both PowerShell profiles. Grok and Claude binaries are unchanged.
 
 ## 9. References
 
